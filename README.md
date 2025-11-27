@@ -67,17 +67,37 @@ Metadata CSV columns: `audio_name`, `speaker`, `gender` (Male/Female), `dialect`
 
 ## Usage
 
-### 1. Data Preparation
+### 1. Feature Extraction (Optional)
+
+The `prepare_data.py` script extracts and caches WavLM features from audio files. Benefits:
+- **Run once, reuse many times**: Extract features once, then run multiple training experiments with different hyperparameters
+- **Faster iteration**: Skip audio loading and WavLM forward pass during training
+- **Extensible**: Add new datasets by creating a new class (e.g., for HuggingFace datasets)
 
 ```bash
-# Prepare metadata from audio directory
-python prepare_data.py --audio_dir path/to/audio --output_dir path/to/output
+# Extract features from ViSpeech trainset
+python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir features/vispeech --split train
 
-# With train/val/test split
-python prepare_data.py --audio_dir path/to/audio --output_dir path/to/output --split
+# Extract features from test sets
+python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir features/vispeech_clean_test --split clean_test
+python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir features/vispeech_noisy_test --split noisy_test
+```
 
-# Skip audio validation (faster)
-python prepare_data.py --audio_dir path/to/audio --output_dir path/to/output --skip_validation
+Output structure:
+```
+features/vispeech/
+├── features/           # Cached .npy files
+│   ├── audio001.npy
+│   └── ...
+├── metadata.csv        # Updated metadata with feature paths
+└── stats.json          # Extraction statistics
+```
+
+To use cached features, update `configs/finetune.yaml`:
+```yaml
+data:
+  use_cached_features: true
+  feature_dir: "features/vispeech"
 ```
 
 ### 2. Training
@@ -148,31 +168,31 @@ Open browser at `http://localhost:7860`
 ## Model Architecture
 
 ```
-Audio Input
-    |
-    v
+      Audio Input
+          |
+          v
 WavLM Encoder (pretrained)
-    |
-    v
+          |
+          v
 Hidden States [B, T, 768]
-    |
-    v
+          |
+          v
 Attentive Pooling [B, 768]
-    |
-    v
-Layer Normalization
-    |
-    v
-Dropout (0.1)
-    |
-    +------------------+
-    |                  |
-    v                  v
-Gender Head       Dialect Head
-(2 layers)        (3 layers)
-    |                  |
-    v                  v
-[B, 2]             [B, 3]
+          |
+          v
+  Layer Normalization
+          |
+          v
+    Dropout (0.1)
+          |
+    +---------------+
+    |               |
+    v               v
+Gender Head    Dialect Head
+(2 layers)      (3 layers)
+    |               |
+    v               v
+  [B, 2]          [B, 3]
 ```
 
 ## Labels
@@ -224,7 +244,7 @@ If you use this code, please cite:
 @misc{speaker_profiling_vietnamese,
   author = {Vu Thanh Lam},
   title = {Vietnamese Speaker Profiling},
-  year = {2024},
+  year = {2025},
   publisher = {GitHub},
   url = {https://github.com/VuThanhLam124/Profiling_gender_dialect}
 }

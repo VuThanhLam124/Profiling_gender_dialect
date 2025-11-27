@@ -90,7 +90,7 @@ class AudioAugmentation:
 
 
 class ViSpeechDataset(Dataset):
-    """Dataset class for ViSpeech data"""
+    """Dataset class for ViSpeech data - supports both raw audio and cached features"""
     
     def __init__(self, dataframe, audio_dir, feature_extractor, config, is_training=True):
         self.df = dataframe.reset_index(drop=True)
@@ -101,7 +101,13 @@ class ViSpeechDataset(Dataset):
         self.is_training = is_training
         self.logger = get_logger()
         
-        if is_training and config['augmentation']['enabled']:
+        # Check if using cached features
+        self.use_cached_features = config['data'].get('use_cached_features', False)
+        if self.use_cached_features:
+            self.feature_dir = Path(config['data']['feature_dir']) / 'features'
+            self.logger.info(f"Using cached features from: {self.feature_dir}")
+        
+        if is_training and config['augmentation']['enabled'] and not self.use_cached_features:
             self.augmentation = AudioAugmentation(config)
         else:
             self.augmentation = None
@@ -132,36 +138,71 @@ class ViSpeechDataset(Dataset):
             max_length = int(self.sampling_rate * self.max_duration)
             return np.zeros(max_length)
     
+    def load_cached_features(self, audio_name):
+        """Load pre-extracted features from cache"""
+        feature_name = Path(audio_name).stem + '.npy'
+        feature_path = self.feature_dir / feature_name
+        
+        try:
+            features = np.load(feature_path)
+            return torch.from_numpy(features).float()
+        except Exception as e:
+            self.logger.error(f"Error loading features {feature_path}: {e}")
+            return None
+    
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        audio = self.load_audio(row['audio_name'])
         
-        inputs = self.feature_extractor(
-            audio,
-            sampling_rate=self.sampling_rate,
-            return_tensors="pt",
-            padding=True
-        )
-        
-        return {
-            'input_values': inputs.input_values.squeeze(0),
-            'gender_labels': torch.tensor(row['gender_label'], dtype=torch.long),
-            'dialect_labels': torch.tensor(row['dialect_label'], dtype=torch.long)
-        }
+        if self.use_cached_features:
+            # Load pre-extracted features
+            features = self.load_cached_features(row['audio_name'])
+            if features is None:
+                # Fallback to zeros
+                features = torch.zeros(249, 768)  # Default WavLM output shape for 5s audio
+            
+            return {
+                'input_features': features,
+                'gender_labels': torch.tensor(row['gender_label'], dtype=torch.long),
+                'dialect_labels': torch.tensor(row['dialect_label'], dtype=torch.long)
+            }
+        else:
+            # Load raw audio and extract features on-the-fly
+            audio = self.load_audio(row['audio_name'])
+            
+            inputs = self.feature_extractor(
+                audio,
+                sampling_rate=self.sampling_rate,
+                return_tensors="pt",
+                padding=True
+            )
+            
+            return {
+                'input_values': inputs.input_values.squeeze(0),
+                'gender_labels': torch.tensor(row['gender_label'], dtype=torch.long),
+                'dialect_labels': torch.tensor(row['dialect_label'], dtype=torch.long)
+            }
 
 
 class MultiTaskTrainer(Trainer):
-    """Custom trainer for multi-task learning"""
+    """Custom trainer for multi-task learning - supports both raw audio and cached features"""
     
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         gender_labels = inputs.pop("gender_labels")
         dialect_labels = inputs.pop("dialect_labels")
         
-        outputs = model(
-            input_values=inputs["input_values"],
-            gender_labels=gender_labels,
-            dialect_labels=dialect_labels
-        )
+        # Support both input_values (raw audio) and input_features (cached)
+        if "input_features" in inputs:
+            outputs = model(
+                input_features=inputs["input_features"],
+                gender_labels=gender_labels,
+                dialect_labels=dialect_labels
+            )
+        else:
+            outputs = model(
+                input_values=inputs["input_values"],
+                gender_labels=gender_labels,
+                dialect_labels=dialect_labels
+            )
         
         loss = outputs["loss"]
         return (loss, outputs) if return_outputs else loss
@@ -171,11 +212,19 @@ class MultiTaskTrainer(Trainer):
         dialect_labels = inputs.pop("dialect_labels")
         
         with torch.no_grad():
-            outputs = model(
-                input_values=inputs["input_values"],
-                gender_labels=gender_labels,
-                dialect_labels=dialect_labels
-            )
+            # Support both input_values (raw audio) and input_features (cached)
+            if "input_features" in inputs:
+                outputs = model(
+                    input_features=inputs["input_features"],
+                    gender_labels=gender_labels,
+                    dialect_labels=dialect_labels
+                )
+            else:
+                outputs = model(
+                    input_values=inputs["input_values"],
+                    gender_labels=gender_labels,
+                    dialect_labels=dialect_labels
+                )
             loss = outputs["loss"]
         
         return (

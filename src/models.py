@@ -128,16 +128,18 @@ class MultiTaskSpeakerModel(nn.Module):
     
     def forward(
         self, 
-        input_values: torch.Tensor, 
+        input_values: torch.Tensor = None,
+        input_features: torch.Tensor = None,
         attention_mask: torch.Tensor = None,
         gender_labels: torch.Tensor = None, 
         dialect_labels: torch.Tensor = None
     ):
         """
-        Forward pass
+        Forward pass - supports both raw audio and pre-extracted features
         
         Args:
-            input_values: Audio waveform [B, T]
+            input_values: Audio waveform [B, T] (for raw audio mode)
+            input_features: Pre-extracted WavLM features [B, T, H] (for cached mode)
             attention_mask: Attention mask [B, T]
             gender_labels: Gender labels [B] (optional, for training)
             dialect_labels: Dialect labels [B] (optional, for training)
@@ -149,9 +151,16 @@ class MultiTaskSpeakerModel(nn.Module):
                 - dialect_logits: Dialect predictions [B, num_dialects]
                 - attention_weights: Attention weights from pooling [B, T]
         """
-        # Extract features from WavLM
-        outputs = self.wavlm(input_values, attention_mask=attention_mask)
-        hidden_states = outputs.last_hidden_state  # [B, T, H]
+        # Get hidden states from either raw audio or pre-extracted features
+        if input_features is not None:
+            # Use pre-extracted features directly
+            hidden_states = input_features
+        elif input_values is not None:
+            # Extract features from WavLM
+            outputs = self.wavlm(input_values, attention_mask=attention_mask)
+            hidden_states = outputs.last_hidden_state  # [B, T, H]
+        else:
+            raise ValueError("Either input_values or input_features must be provided")
         
         # Attentive pooling
         pooled, attn_weights = self.attentive_pooling(hidden_states, attention_mask)

@@ -69,6 +69,9 @@ data:
   train_meta: "/home/ubuntu/DataScience/Voice_Pro_filling/ViSpeech/metadata/trainset.csv"
   train_audio: "/home/ubuntu/DataScience/Voice_Pro_filling/ViSpeech/trainset"
   val_split: 0.15
+  # Cached features (set use_cached_features: true to enable)
+  use_cached_features: false
+  feature_dir: "features/vispeech"  # Output from prepare_data.py
 
 # Output
 output:

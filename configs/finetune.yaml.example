@@ -70,6 +70,9 @@ data:
   train_meta: "path/to/metadata/trainset.csv"
   train_audio: "path/to/trainset"
   val_split: 0.15
+  # Cached features - run prepare_data.py first, then enable
+  use_cached_features: false
+  feature_dir: "features/vispeech"  # Output directory from prepare_data.py
 
 # Output
 output:
