@@ -1,5 +1,6 @@
 # Finetune Configuration
 # Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
+# Copy this file to finetune.yaml and update paths
 
 # Model
 model:
@@ -19,7 +20,7 @@ audio:
 training:
   batch_size: 32
   learning_rate: 5e-5
-  num_epochs: 1
+  num_epochs: 15
   warmup_ratio: 0.125
   weight_decay: 0.0125
   gradient_clip: 1.0
@@ -64,10 +65,10 @@ augmentation:
     max_gain_db: 12
     probability: 0.5
 
-# Data Paths (relative to repo root)
+# Data Paths (UPDATE THESE PATHS)
 data:
-  train_meta: "/home/ubuntu/DataScience/Voice_Pro_filling/ViSpeech/metadata/trainset.csv"
-  train_audio: "/home/ubuntu/DataScience/Voice_Pro_filling/ViSpeech/trainset"
+  train_meta: "path/to/metadata/trainset.csv"
+  train_audio: "path/to/trainset"
   val_split: 0.15
 
 # Output

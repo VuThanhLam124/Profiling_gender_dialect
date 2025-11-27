@@ -1,0 +1,40 @@
+# Inference Configuration
+# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
+# Copy this file to infer.yaml and update paths
+
+# Model
+model:
+  checkpoint: "path/to/best_model"
+  name: "microsoft/wavlm-base-plus"
+  head_hidden_dim: 256
+
+# Audio Processing
+audio:
+  sampling_rate: 16000
+  max_duration: 5
+
+# Inference
+inference:
+  batch_size: 1
+  device: "cuda"
+
+# Input
+input:
+  audio_path: null
+  audio_dir: null
+
+# Output
+output:
+  dir: "output/predictions"
+  save_results: true
+  format: "json"
+
+# Label Mappings
+labels:
+  gender:
+    0: "Male"
+    1: "Female"
+  dialect:
+    0: "North"
+    1: "Central"
+    2: "South"

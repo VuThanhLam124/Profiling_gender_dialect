@@ -3,10 +3,13 @@ Model Architecture for Speaker Profiling
 WavLM + Attentive Pooling + LayerNorm
 """
 
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import WavLMModel
+
+logger = logging.getLogger("speaker_profiling")
 
 
 class AttentivePooling(nn.Module):
@@ -220,7 +223,7 @@ class MultiTaskSpeakerModelFromConfig(MultiTaskSpeakerModel):
             dialect_loss_weight=config.get('loss', {}).get('dialect_weight', 3.0)
         )
         
-        print(f"Architecture: WavLM + Attentive Pooling + LayerNorm")
-        print(f"Hidden size: {self.wavlm.config.hidden_size}")
-        print(f"Head hidden dim: {model_config.get('head_hidden_dim', 256)}")
-        print(f"Dropout: {model_config.get('dropout', 0.1)}")
+        logger.info("Architecture: WavLM + Attentive Pooling + LayerNorm")
+        logger.info(f"Hidden size: {self.wavlm.config.hidden_size}")
+        logger.info(f"Head hidden dim: {model_config.get('head_hidden_dim', 256)}")
+        logger.info(f"Dropout: {model_config.get('dropout', 0.1)}")

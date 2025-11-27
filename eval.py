@@ -1,6 +1,5 @@
 """
 Evaluation Script for Speaker Profiling Model
-Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
 
 Usage:
     python eval.py --config configs/eval.yaml
@@ -8,26 +7,25 @@ Usage:
 
 import os
 import argparse
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
 import librosa
-from omegaconf import OmegaConf
-import json
-from pathlib import Path
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 from transformers import Wav2Vec2FeatureExtractor, Trainer, TrainingArguments
 from torch.utils.data import Dataset
-import warnings
-warnings.filterwarnings('ignore')
 
 from src.models import MultiTaskSpeakerModel
-
-
-def load_config(config_path):
-    """Load configuration from yaml file using OmegaConf"""
-    config = OmegaConf.load(config_path)
-    return config
+from src.utils import (
+    setup_logging,
+    get_logger,
+    load_config,
+    load_model_checkpoint,
+    preprocess_audio
+)
 
 
 class ViSpeechDataset(Dataset):
@@ -38,7 +36,8 @@ class ViSpeechDataset(Dataset):
         self.audio_dir = Path(audio_dir)
         self.feature_extractor = feature_extractor
         self.sampling_rate = config['audio']['sampling_rate']
-        self.max_length = int(self.sampling_rate * config['audio']['max_duration'])
+        self.max_duration = config['audio']['max_duration']
+        self.logger = get_logger()
     
     def __len__(self):
         return len(self.df)
@@ -48,20 +47,17 @@ class ViSpeechDataset(Dataset):
         
         try:
             audio, sr = librosa.load(audio_path, sr=self.sampling_rate, mono=True)
-            audio, _ = librosa.effects.trim(audio, top_db=20)
-            audio = audio / (np.max(np.abs(audio)) + 1e-8)
-            
-            if len(audio) < self.max_length:
-                audio = np.pad(audio, (0, self.max_length - len(audio)))
-            else:
-                start = (len(audio) - self.max_length) // 2
-                audio = audio[start:start + self.max_length]
-            
+            audio = preprocess_audio(
+                audio,
+                sampling_rate=self.sampling_rate,
+                max_duration=self.max_duration
+            )
             return audio
             
         except Exception as e:
-            print(f"Error loading {audio_path}: {e}")
-            return np.zeros(self.max_length)
+            self.logger.error(f"Error loading {audio_path}: {e}")
+            max_length = int(self.sampling_rate * self.max_duration)
+            return np.zeros(max_length)
     
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
@@ -139,10 +135,11 @@ def compute_metrics(pred):
 
 
 def evaluate_dataset(trainer, dataset, dataset_name, config):
-    """Evaluate model on a dataset and print detailed report"""
+    """Evaluate model on a dataset and log detailed report"""
+    logger = get_logger()
     
-    print(f"\nEVALUATING ON {dataset_name.upper()}")
-    print("-" * 50)
+    logger.info(f"EVALUATING ON {dataset_name.upper()}")
+    logger.info("-" * 50)
     
     results = trainer.predict(dataset)
     gender_logits, dialect_logits = results.predictions
@@ -156,25 +153,25 @@ def evaluate_dataset(trainer, dataset, dataset_name, config):
     gender_f1 = f1_score(gender_labels, gender_preds, average='weighted') * 100
     dialect_f1 = f1_score(dialect_labels, dialect_preds, average='weighted') * 100
     
-    print(f"\nOverall Metrics:")
-    print(f"  Gender  - Accuracy: {gender_acc:.2f}%  |  F1: {gender_f1:.2f}%")
-    print(f"  Dialect - Accuracy: {dialect_acc:.2f}%  |  F1: {dialect_f1:.2f}%")
+    logger.info("Overall Metrics:")
+    logger.info(f"  Gender  - Accuracy: {gender_acc:.2f}%  |  F1: {gender_f1:.2f}%")
+    logger.info(f"  Dialect - Accuracy: {dialect_acc:.2f}%  |  F1: {dialect_f1:.2f}%")
     
-    print(f"\nGender Classification Report:")
-    print(classification_report(gender_labels, gender_preds,
+    logger.info("Gender Classification Report:")
+    logger.info("\n" + classification_report(gender_labels, gender_preds,
                                target_names=['Male', 'Female'],
                                digits=4))
     
-    print(f"\nDialect Classification Report:")
-    print(classification_report(dialect_labels, dialect_preds,
+    logger.info("Dialect Classification Report:")
+    logger.info("\n" + classification_report(dialect_labels, dialect_preds,
                                target_names=['North', 'Central', 'South'],
                                digits=4))
     
-    print(f"\nGender Confusion Matrix:")
-    print(confusion_matrix(gender_labels, gender_preds))
+    logger.info("Gender Confusion Matrix:")
+    logger.info(f"\n{confusion_matrix(gender_labels, gender_preds)}")
     
-    print(f"\nDialect Confusion Matrix:")
-    print(confusion_matrix(dialect_labels, dialect_preds))
+    logger.info("Dialect Confusion Matrix:")
+    logger.info(f"\n{confusion_matrix(dialect_labels, dialect_preds)}")
     
     return {
         'gender_acc': gender_acc,
@@ -186,13 +183,14 @@ def evaluate_dataset(trainer, dataset, dataset_name, config):
 
 def compare_with_baseline(clean_results, noisy_results, config):
     """Compare results with baseline from PACLIC 2024"""
-    
+    logger = get_logger()
     baseline = config['baseline']
     
-    print("\nCOMPARISON WITH BASELINE (PACLIC 2024 - ResNet34)")
-    print("-" * 70)
-    print(f"{'Task':<15} {'Test Set':<12} {'Baseline':<12} {'Our Model':<12} {'Delta':<12}")
-    print("-" * 70)
+    logger.info("COMPARISON WITH BASELINE (PACLIC 2024 - ResNet34)")
+    logger.info("-" * 70)
+    header = f"{'Task':<15} {'Test Set':<12} {'Baseline':<12} {'Our Model':<12} {'Delta':<12}"
+    logger.info(header)
+    logger.info("-" * 70)
     
     our_results = {
         'gender': {'clean': clean_results['gender_acc'], 'noisy': noisy_results['gender_acc']},
@@ -206,44 +204,35 @@ def compare_with_baseline(clean_results, noisy_results, config):
             delta = our_val - baseline_val
             delta_str = f"{delta:+.2f}%"
             
-            print(f"{task.capitalize():<15} {test_set.capitalize():<12} "
+            logger.info(f"{task.capitalize():<15} {test_set.capitalize():<12} "
                   f"{baseline_val:<12.2f} {our_val:<12.2f} {delta_str:<12}")
 
 
 def main(config_path):
     """Main evaluation function"""
+    logger = setup_logging()
     
-    print("SPEAKER PROFILING EVALUATION")
-    print("-" * 50)
+    logger.info("=" * 50)
+    logger.info("SPEAKER PROFILING EVALUATION")
+    logger.info("=" * 50)
     
     config = load_config(config_path)
     
-    print(f"Model checkpoint: {config['model']['checkpoint']}")
-    print("-" * 50)
+    logger.info(f"Model checkpoint: {config['model']['checkpoint']}")
+    logger.info("-" * 50)
     
     # Load feature extractor
-    print("Loading feature extractor...")
+    logger.info("Loading feature extractor...")
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(config['model']['checkpoint'])
     
     # Load model
-    print("Loading model...")
+    logger.info("Loading model...")
     model = MultiTaskSpeakerModel(config['model']['name'])
-    
-    # Load checkpoint weights
-    checkpoint_path = os.path.join(config['model']['checkpoint'], 'model.safetensors')
-    if os.path.exists(checkpoint_path):
-        from safetensors.torch import load_file
-        state_dict = load_file(checkpoint_path)
-        model.load_state_dict(state_dict)
-    else:
-        checkpoint_path = os.path.join(config['model']['checkpoint'], 'pytorch_model.bin')
-        state_dict = torch.load(checkpoint_path, map_location='cpu')
-        model.load_state_dict(state_dict)
-    
-    print("Model loaded successfully")
+    model = load_model_checkpoint(model, config['model']['checkpoint'])
+    logger.info("Model loaded successfully")
     
     # Load test data
-    print("\nLoading test data...")
+    logger.info("Loading test data...")
     
     clean_test_df = pd.read_csv(config['data']['clean_test_meta'])
     noisy_test_df = pd.read_csv(config['data']['noisy_test_meta'])
@@ -255,8 +244,8 @@ def main(config_path):
         df['gender_label'] = df['gender'].map(gender_map)
         df['dialect_label'] = df['dialect'].map(dialect_map)
     
-    print(f"Clean test: {len(clean_test_df):,} samples")
-    print(f"Noisy test: {len(noisy_test_df):,} samples")
+    logger.info(f"Clean test: {len(clean_test_df):,} samples")
+    logger.info(f"Noisy test: {len(noisy_test_df):,} samples")
     
     # Create datasets
     clean_test_dataset = ViSpeechDataset(
@@ -304,9 +293,9 @@ def main(config_path):
         }
         with open(os.path.join(config['output']['dir'], 'results.json'), 'w') as f:
             json.dump(results, f, indent=2)
-        print(f"\nResults saved to {config['output']['dir']}/results.json")
+        logger.info(f"Results saved to {config['output']['dir']}/results.json")
     
-    print("\nEvaluation completed!")
+    logger.info("Evaluation completed!")
 
 
 if __name__ == "__main__":

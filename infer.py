@@ -1,6 +1,5 @@
 """
 Inference Script for Speaker Profiling Model
-Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
 
 Usage:
     python infer.py --config configs/infer.yaml --audio path/to/audio.wav
@@ -9,33 +8,33 @@ Usage:
 
 import os
 import argparse
-import numpy as np
-import torch
-import librosa
-from omegaconf import OmegaConf
 import json
 from pathlib import Path
+
+import numpy as np
+import torch
 from transformers import Wav2Vec2FeatureExtractor
-import warnings
-warnings.filterwarnings('ignore')
 
 from src.models import MultiTaskSpeakerModel
-
-
-def load_config(config_path):
-    """Load configuration from yaml file using OmegaConf"""
-    config = OmegaConf.load(config_path)
-    return config
+from src.utils import (
+    setup_logging,
+    get_logger,
+    load_config,
+    get_device,
+    load_model_checkpoint,
+    load_and_preprocess_audio
+)
 
 
 class SpeakerProfiler:
     """Speaker Profiler for inference"""
     
     def __init__(self, config):
+        self.logger = get_logger()
         self.config = config
-        self.device = torch.device(config['inference']['device'] if torch.cuda.is_available() else 'cpu')
+        self.device = get_device(config['inference']['device'])
         self.sampling_rate = config['audio']['sampling_rate']
-        self.max_length = int(self.sampling_rate * config['audio']['max_duration'])
+        self.max_duration = config['audio']['max_duration']
         
         self.gender_labels = config['labels']['gender']
         self.dialect_labels = config['labels']['dialect']
@@ -44,39 +43,30 @@ class SpeakerProfiler:
     
     def _load_model(self):
         """Load model and feature extractor"""
-        print("Loading model...")
+        self.logger.info("Loading model...")
         
         self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
             self.config['model']['checkpoint']
         )
         
         self.model = MultiTaskSpeakerModel(self.config['model']['name'])
-        
-        checkpoint_path = os.path.join(self.config['model']['checkpoint'], 'model.safetensors')
-        if os.path.exists(checkpoint_path):
-            from safetensors.torch import load_file
-            state_dict = load_file(checkpoint_path)
-            self.model.load_state_dict(state_dict)
-        else:
-            checkpoint_path = os.path.join(self.config['model']['checkpoint'], 'pytorch_model.bin')
-            state_dict = torch.load(checkpoint_path, map_location='cpu')
-            self.model.load_state_dict(state_dict)
+        self.model = load_model_checkpoint(
+            self.model,
+            self.config['model']['checkpoint'],
+            str(self.device)
+        )
         
         self.model.to(self.device)
         self.model.eval()
-        print(f"Model loaded on {self.device}")
+        self.logger.info(f"Model loaded on {self.device}")
     
     def preprocess_audio(self, audio_path):
         """Load and preprocess audio file"""
-        audio, sr = librosa.load(audio_path, sr=self.sampling_rate, mono=True)
-        audio, _ = librosa.effects.trim(audio, top_db=20)
-        audio = audio / (np.max(np.abs(audio)) + 1e-8)
-        
-        if len(audio) < self.max_length:
-            audio = np.pad(audio, (0, self.max_length - len(audio)))
-        else:
-            start = (len(audio) - self.max_length) // 2
-            audio = audio[start:start + self.max_length]
+        audio = load_and_preprocess_audio(
+            audio_path,
+            sampling_rate=self.sampling_rate,
+            max_duration=self.max_duration
+        )
         
         inputs = self.feature_extractor(
             audio,
@@ -136,7 +126,7 @@ class SpeakerProfiler:
                 result = self.predict(audio_path)
                 results.append(result)
             except Exception as e:
-                print(f"Error processing {audio_path}: {e}")
+                self.logger.error(f"Error processing {audio_path}: {e}")
                 results.append({
                     'audio_path': str(audio_path),
                     'error': str(e)
@@ -144,27 +134,34 @@ class SpeakerProfiler:
         return results
 
 
-def print_result(result):
-    """Print prediction result"""
-    print(f"\nAudio: {result['audio_path']}")
-    print("-" * 40)
+def log_result(result, logger):
+    """Log prediction result"""
+    logger.info(f"Audio: {result['audio_path']}")
     
     if 'error' in result:
-        print(f"Error: {result['error']}")
+        logger.error(f"Error: {result['error']}")
         return
     
     gender = result['gender']
     dialect = result['dialect']
     
-    print(f"Gender:  {gender['prediction']} (code: {gender['code']}, confidence: {gender['confidence']:.2%})")
-    print(f"Dialect: {dialect['prediction']} (code: {dialect['code']}, confidence: {dialect['confidence']:.2%})")
+    logger.info(
+        f"  Gender: {gender['prediction']} "
+        f"(code: {gender['code']}, confidence: {gender['confidence']:.2%})"
+    )
+    logger.info(
+        f"  Dialect: {dialect['prediction']} "
+        f"(code: {dialect['code']}, confidence: {dialect['confidence']:.2%})"
+    )
 
 
 def main(config_path, audio_path=None, audio_dir=None):
     """Main inference function"""
+    logger = setup_logging()
     
-    print("SPEAKER PROFILING INFERENCE")
-    print("-" * 50)
+    logger.info("=" * 50)
+    logger.info("SPEAKER PROFILING INFERENCE")
+    logger.info("=" * 50)
     
     config = load_config(config_path)
     
@@ -186,24 +183,26 @@ def main(config_path, audio_path=None, audio_dir=None):
             audio_files.extend(audio_dir.glob(ext))
     
     if not audio_files:
-        print("No audio files found. Please specify --audio or --audio_dir")
+        logger.warning("No audio files found. Please specify --audio or --audio_dir")
         return
     
-    print(f"\nProcessing {len(audio_files)} audio file(s)...")
+    logger.info(f"Processing {len(audio_files)} audio file(s)...")
     
     results = profiler.predict_batch(audio_files)
     
+    logger.info("-" * 50)
     for result in results:
-        print_result(result)
+        log_result(result, logger)
+    logger.info("-" * 50)
     
     if config['output']['save_results']:
         os.makedirs(config['output']['dir'], exist_ok=True)
         output_path = os.path.join(config['output']['dir'], 'predictions.json')
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
-        print(f"\nResults saved to {output_path}")
+        logger.info(f"Results saved to {output_path}")
     
-    print("\nInference completed!")
+    logger.info("Inference completed!")
 
 
 if __name__ == "__main__":
