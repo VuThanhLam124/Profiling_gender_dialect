@@ -12,8 +12,6 @@ import random
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import librosa
 from omegaconf import OmegaConf
 from pathlib import Path
@@ -21,7 +19,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 from transformers import (
     Wav2Vec2FeatureExtractor,
-    WavLMModel,
     Trainer,
     TrainingArguments,
     EarlyStoppingCallback
@@ -30,6 +27,8 @@ from torch.utils.data import Dataset
 from audiomentations import Compose, AddGaussianNoise, TimeStretch, PitchShift, Shift, Gain
 import warnings
 warnings.filterwarnings('ignore')
+
+from src.models import MultiTaskSpeakerModelFromConfig
 
 
 def load_config(config_path):
@@ -156,120 +155,6 @@ class ViSpeechDataset(Dataset):
             'input_values': inputs.input_values.squeeze(0),
             'gender_labels': torch.tensor(row['gender_label'], dtype=torch.long),
             'dialect_labels': torch.tensor(row['dialect_label'], dtype=torch.long)
-        }
-
-
-class AttentivePooling(nn.Module):
-    """Attention-based pooling for temporal aggregation"""
-    
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.attention = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.Tanh(),
-            nn.Linear(hidden_size, 1, bias=False)
-        )
-    
-    def forward(self, x, mask=None):
-        attn_weights = self.attention(x)
-        
-        if mask is not None:
-            mask = mask.unsqueeze(-1)
-            attn_weights = attn_weights.masked_fill(mask == 0, -1e9)
-        
-        attn_weights = F.softmax(attn_weights, dim=1)
-        pooled = torch.sum(x * attn_weights, dim=1)
-        
-        return pooled, attn_weights.squeeze(-1)
-
-
-class MultiTaskSpeakerModel(torch.nn.Module):
-    """
-    Multi-task model for gender and dialect classification
-    
-    Architecture:
-        Audio -> WavLM -> Last Hidden [B,T,768]
-                              |
-                     Attentive Pooling [B,768]
-                              |
-                     Layer Normalization
-                              |
-                         Dropout(0.1)
-                              |
-              +---------------+---------------+
-              |                               |
-        Gender Head (2 layers)     Dialect Head (3 layers)
-              |                               |
-            [B,2]                           [B,3]
-    """
-    
-    def __init__(self, config):
-        super().__init__()
-        
-        model_config = config['model']
-        self.dialect_loss_weight = config['loss']['dialect_weight']
-        
-        self.wavlm = WavLMModel.from_pretrained(model_config['name'])
-        
-        if model_config['freeze_encoder']:
-            for param in self.wavlm.parameters():
-                param.requires_grad = False
-            print("Encoder FROZEN")
-        
-        hidden_size = self.wavlm.config.hidden_size
-        head_hidden_dim = model_config.get('head_hidden_dim', 256)
-        dropout = model_config['dropout']
-        
-        self.attentive_pooling = AttentivePooling(hidden_size)
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(dropout)
-        
-        self.gender_head = nn.Sequential(
-            nn.Linear(hidden_size, head_hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(head_hidden_dim, model_config['num_genders'])
-        )
-        
-        self.dialect_head = nn.Sequential(
-            nn.Linear(hidden_size, head_hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(head_hidden_dim, head_hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(head_hidden_dim // 2, model_config['num_dialects'])
-        )
-        
-        print(f"Architecture: WavLM + Attentive Pooling + LayerNorm")
-        print(f"Hidden size: {hidden_size}")
-        print(f"Head hidden dim: {head_hidden_dim}")
-        print(f"Dropout: {dropout}")
-        
-    def forward(self, input_values, attention_mask=None, 
-                gender_labels=None, dialect_labels=None):
-        outputs = self.wavlm(input_values, attention_mask=attention_mask)
-        hidden_states = outputs.last_hidden_state
-        
-        pooled, attn_weights = self.attentive_pooling(hidden_states, attention_mask)
-        pooled = self.layer_norm(pooled)
-        pooled = self.dropout(pooled)
-        
-        gender_logits = self.gender_head(pooled)
-        dialect_logits = self.dialect_head(pooled)
-        
-        loss = None
-        if gender_labels is not None and dialect_labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
-            gender_loss = loss_fct(gender_logits, gender_labels)
-            dialect_loss = loss_fct(dialect_logits, dialect_labels)
-            loss = gender_loss + self.dialect_loss_weight * dialect_loss
-        
-        return {
-            'loss': loss,
-            'gender_logits': gender_logits,
-            'dialect_logits': dialect_logits,
-            'attention_weights': attn_weights
         }
 
 
@@ -405,7 +290,7 @@ def main(config_path):
     
     # Model
     print("Loading model...")
-    model = MultiTaskSpeakerModel(config)
+    model = MultiTaskSpeakerModelFromConfig(config)
     
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
