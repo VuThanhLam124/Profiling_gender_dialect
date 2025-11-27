@@ -1,0 +1,50 @@
+# Evaluation Configuration
+# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
+
+# Model
+model:
+  checkpoint: "output/speaker-profiling/best_model"
+  name: "microsoft/wavlm-base-plus"
+  head_hidden_dim: 256
+
+# Audio Processing
+audio:
+  sampling_rate: 16000
+  max_duration: 5
+
+# Evaluation
+evaluation:
+  batch_size: 32
+  dataloader_num_workers: 2
+
+# Data Paths (relative to repo root)
+data:
+  clean_test_meta: "ViSpeech/metadata/clean_testset.csv"
+  clean_test_audio: "ViSpeech/clean_testset"
+  noisy_test_meta: "ViSpeech/metadata/noisy_testset.csv"
+  noisy_test_audio: "ViSpeech/noisy_testset"
+
+# Output
+output:
+  dir: "output/evaluation"
+  save_predictions: true
+  save_confusion_matrix: true
+
+# Label Mappings
+labels:
+  gender:
+    Male: 0
+    Female: 1
+  dialect:
+    North: 0
+    Central: 1
+    South: 2
+
+# Baseline Comparison (PACLIC 2024 - ResNet34)
+baseline:
+  gender:
+    clean: 98.73
+    noisy: 98.14
+  dialect:
+    clean: 81.47
+    noisy: 74.80

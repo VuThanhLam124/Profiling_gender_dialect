@@ -1,0 +1,87 @@
+# Finetune Configuration
+# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
+
+# Model
+model:
+  name: "microsoft/wavlm-base-plus"
+  num_genders: 2
+  num_dialects: 3
+  freeze_encoder: false
+  dropout: 0.1
+  head_hidden_dim: 256
+
+# Audio Processing
+audio:
+  sampling_rate: 16000
+  max_duration: 5
+
+# Training
+training:
+  batch_size: 32
+  learning_rate: 5e-5
+  num_epochs: 15
+  warmup_ratio: 0.125
+  weight_decay: 0.0125
+  gradient_clip: 1.0
+  lr_scheduler: "linear"
+  fp16: true
+  dataloader_num_workers: 2
+
+# Loss
+loss:
+  dialect_weight: 3.0
+
+# Data Augmentation
+augmentation:
+  enabled: true
+  probability: 0.8
+  gaussian_noise:
+    min_amplitude: 0.001
+    max_amplitude: 0.015
+    probability: 0.5
+  time_stretch:
+    min_rate: 0.8
+    max_rate: 1.2
+    probability: 0.5
+  pitch_shift:
+    min_semitones: -4
+    max_semitones: 4
+    probability: 0.5
+  shift:
+    min_shift: -0.5
+    max_shift: 0.5
+    probability: 0.3
+  gain:
+    min_gain_db: -12
+    max_gain_db: 12
+    probability: 0.5
+
+# Data Paths (relative to repo root)
+data:
+  train_meta: "ViSpeech/metadata/trainset.csv"
+  train_audio: "ViSpeech/trainset"
+  val_split: 0.15
+
+# Output
+output:
+  dir: "output/speaker-profiling"
+  save_total_limit: 3
+  metric_for_best_model: "dialect_acc"
+
+# Early Stopping
+early_stopping:
+  patience: 3
+  threshold: 0.0025
+
+# Label Mappings
+labels:
+  gender:
+    Male: 0
+    Female: 1
+  dialect:
+    North: 0
+    Central: 1
+    South: 2
+
+# Reproducibility
+seed: 42
