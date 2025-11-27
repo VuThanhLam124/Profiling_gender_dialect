@@ -10,6 +10,16 @@ Nhận diện giới tính và vùng miền từ giọng nói tiếng Việt.
 pip install -r requirements.txt
 ```
 
+### Link tải dữ liệu:
+
+https://drive.google.com/file/d/1-BbOHf42o6eBje2WqQiiRKMtNxmZiRf9/view?usp=sharing
+
+### Tham khảo tại: 
+
+```bash
+https://github.com/TranNguyenNB/ViSpeech
+```
+
 ## Cấu trúc dữ liệu
 
 ```
