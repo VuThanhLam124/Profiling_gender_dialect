@@ -1,5 +1,5 @@
 # Evaluation Configuration
-# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
+# Architecture: Encoder + Attentive Pooling + LayerNorm
 
 # Model
 model:

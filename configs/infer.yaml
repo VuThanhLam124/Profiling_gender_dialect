@@ -1,5 +1,4 @@
 # Inference Configuration
-# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
 
 # Model
 model:
