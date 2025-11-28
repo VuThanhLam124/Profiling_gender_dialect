@@ -8,6 +8,7 @@ Usage:
 """
 
 import os
+import io
 import random
 import argparse
 from pathlib import Path
@@ -16,6 +17,7 @@ import numpy as np
 import pandas as pd
 import torch
 import librosa
+import soundfile as sf
 import mlflow
 import mlflow.pytorch
 from sklearn.model_selection import train_test_split
@@ -28,6 +30,12 @@ from transformers import (
     TrainerCallback
 )
 from torch.utils.data import Dataset
+
+try:
+    from datasets import load_dataset
+    HF_DATASETS_AVAILABLE = True
+except ImportError:
+    HF_DATASETS_AVAILABLE = False
 
 try:
     from audiomentations import Compose, AddGaussianNoise, TimeStretch, PitchShift, Shift, Gain
@@ -161,6 +169,182 @@ class ViSpeechDataset(Dataset):
         }
 
 
+class ViMDDataset(Dataset):
+    """
+    Dataset class for ViMD (HuggingFace format).
+    Loads audio from HuggingFace datasets with path/bytes/array support.
+    """
+    
+    def __init__(
+        self, 
+        hf_dataset,
+        feature_extractor,
+        config: dict,
+        is_training: bool = True
+    ):
+        self.dataset = hf_dataset
+        self.feature_extractor = feature_extractor
+        self.sampling_rate = config['audio']['sampling_rate']
+        self.max_length = int(self.sampling_rate * config['audio']['max_duration'])
+        self.is_training = is_training
+        self.logger = get_logger()
+        
+        # Label mappings
+        self.region_to_dialect = config['labels'].get('region_to_dialect', {
+            'North': 0, 'Central': 1, 'South': 2
+        })
+        self.gender_map = config['labels'].get('gender', {
+            'Male': 0, 'Female': 1, 0: 0, 1: 1
+        })
+        
+        # Data augmentation (only for training)
+        augment_prob = config.get('augmentation', {}).get('prob', 0.8)
+        if is_training and AUGMENTATION_AVAILABLE:
+            self.augmentation = AudioAugmentation(self.sampling_rate, augment_prob)
+            self.logger.info(f"Augmentation ENABLED (prob={augment_prob})")
+        else:
+            self.augmentation = None
+            if is_training and not AUGMENTATION_AVAILABLE:
+                self.logger.warning("audiomentations not installed. Augmentation DISABLED.")
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def load_audio_from_hf(self, audio_data):
+        """Load audio from HuggingFace dataset format (path/bytes/array)"""
+        try:
+            audio = None
+            
+            # Case 1: audio_data is dict with 'path', 'bytes', or 'array'
+            if isinstance(audio_data, dict):
+                # Try loading from path first
+                if 'path' in audio_data and audio_data['path']:
+                    try:
+                        audio, sr = librosa.load(audio_data['path'], sr=self.sampling_rate, mono=True)
+                    except Exception:
+                        pass
+                
+                # Try loading from bytes
+                if audio is None and 'bytes' in audio_data and audio_data['bytes']:
+                    try:
+                        audio_bytes = io.BytesIO(audio_data['bytes'])
+                        audio, sr = sf.read(audio_bytes)
+                        if len(audio.shape) > 1:
+                            audio = np.mean(audio, axis=1)  # Convert to mono
+                        if sr != self.sampling_rate:
+                            audio = librosa.resample(audio, orig_sr=sr, target_sr=self.sampling_rate)
+                    except Exception:
+                        pass
+                
+                # Try loading from pre-decoded array
+                if audio is None and 'array' in audio_data:
+                    try:
+                        audio = np.array(audio_data['array'], dtype=np.float32)
+                        sr = audio_data.get('sampling_rate', self.sampling_rate)
+                        if sr != self.sampling_rate:
+                            audio = librosa.resample(audio, orig_sr=sr, target_sr=self.sampling_rate)
+                    except Exception:
+                        pass
+            
+            # Case 2: audio_data is string (path)
+            elif isinstance(audio_data, str):
+                audio, sr = librosa.load(audio_data, sr=self.sampling_rate, mono=True)
+            
+            # Validation
+            if audio is None or len(audio) == 0:
+                return np.zeros(self.max_length, dtype=np.float32)
+            
+            # Convert to mono if stereo
+            if len(audio.shape) > 1:
+                audio = np.mean(audio, axis=1)
+            
+            # Trim silence
+            if len(audio) > 100:
+                try:
+                    audio, _ = librosa.effects.trim(audio, top_db=20)
+                except Exception:
+                    pass
+            
+            # Apply augmentation (training only)
+            if self.is_training and self.augmentation is not None and len(audio) > 100:
+                try:
+                    audio = self.augmentation(audio)
+                except Exception:
+                    pass
+            
+            # Normalize
+            if len(audio) > 0:
+                max_val = np.max(np.abs(audio))
+                if max_val > 1e-8:
+                    audio = audio / max_val
+                else:
+                    return np.zeros(self.max_length, dtype=np.float32)
+            
+            # Pad or truncate
+            if len(audio) < self.max_length:
+                audio = np.pad(audio, (0, self.max_length - len(audio)))
+            else:
+                if self.is_training:
+                    start = np.random.randint(0, max(1, len(audio) - self.max_length))
+                else:
+                    start = max(0, (len(audio) - self.max_length) // 2)
+                audio = audio[start:start + self.max_length]
+            
+            return audio.astype(np.float32)
+            
+        except Exception as e:
+            return np.zeros(self.max_length, dtype=np.float32)
+    
+    def __getitem__(self, idx):
+        try:
+            item = self.dataset[idx]
+            
+            # Load audio
+            audio = self.load_audio_from_hf(item.get('audio'))
+            
+            # Extract features
+            inputs = self.feature_extractor(
+                audio,
+                sampling_rate=self.sampling_rate,
+                return_tensors="pt",
+                padding=True
+            )
+            
+            # Map labels - ViMD uses 'gender' (int) and 'region' (string)
+            gender_raw = item.get('gender', 0)
+            region = item.get('region', 'North')
+            
+            # Gender: support both int and string
+            if isinstance(gender_raw, int):
+                gender_label = gender_raw
+            else:
+                gender_label = self.gender_map.get(gender_raw, 0)
+            
+            # Dialect: map region to dialect label
+            dialect_label = self.region_to_dialect.get(region, 0)
+            
+            return {
+                'input_values': inputs.input_values.squeeze(0),
+                'gender_labels': torch.tensor(gender_label, dtype=torch.long),
+                'dialect_labels': torch.tensor(dialect_label, dtype=torch.long)
+            }
+            
+        except Exception as e:
+            # Return dummy data to prevent crash
+            dummy_audio = np.zeros(self.max_length, dtype=np.float32)
+            inputs = self.feature_extractor(
+                dummy_audio,
+                sampling_rate=self.sampling_rate,
+                return_tensors="pt",
+                padding=True
+            )
+            return {
+                'input_values': inputs.input_values.squeeze(0),
+                'gender_labels': torch.tensor(0, dtype=torch.long),
+                'dialect_labels': torch.tensor(0, dtype=torch.long)
+            }
+
+
 class MultiTaskTrainer(Trainer):
     """Custom trainer for multi-task learning"""
     
@@ -254,7 +438,7 @@ def compute_metrics(pred):
 
 
 def load_and_split_data(config, logger):
-    """Load metadata and split by speaker"""
+    """Load metadata and split by speaker (for ViSpeech CSV format)"""
     
     # Load metadata
     train_meta_path = config['data']['train_meta']
@@ -314,9 +498,46 @@ def load_and_split_data(config, logger):
     
     # Verify no speaker leakage
     assert len(set(train_speakers) & set(val_speakers)) == 0, "Speaker leakage detected!"
-    logger.info("No speaker leakage between train/val ✓")
+    logger.info("No speaker leakage between train/val")
     
     return train_data, val_data
+
+
+def load_vimd_data(config, logger):
+    """Load ViMD dataset from HuggingFace format"""
+    
+    if not HF_DATASETS_AVAILABLE:
+        raise ImportError("datasets library required for ViMD. Install: pip install datasets")
+    
+    vimd_path = config['data']['vimd_path']
+    logger.info(f"Loading ViMD dataset from {vimd_path}...")
+    
+    ds = load_dataset(vimd_path, keep_in_memory=False)
+    
+    # Check available splits
+    available_splits = list(ds.keys())
+    logger.info(f"Available splits: {available_splits}")
+    
+    # Handle both 'valid' and 'validation' keys
+    val_key = None
+    if 'validation' in available_splits:
+        val_key = 'validation'
+    elif 'valid' in available_splits:
+        val_key = 'valid'
+    
+    logger.info(f"ViMD Train: {len(ds['train']):,} samples")
+    if val_key:
+        logger.info(f"ViMD Validation: {len(ds[val_key]):,} samples")
+    if 'test' in available_splits:
+        logger.info(f"ViMD Test: {len(ds['test']):,} samples")
+    
+    # Normalize split name to 'valid'
+    if val_key == 'validation':
+        ds['valid'] = ds['validation']
+    
+    logger.info(f"Available columns: {ds['train'].column_names}")
+    
+    return ds, val_key or 'valid'
 
 
 def main(config_path):
@@ -330,6 +551,10 @@ def main(config_path):
     # Load config
     config = load_config(config_path)
     set_seed(config['seed'])
+    
+    # Determine data source: vispeech (CSV) or vimd (HuggingFace)
+    data_source = config['data'].get('source', 'vispeech')
+    logger.info(f"Data source: {data_source}")
     
     # Setup MLflow
     mlflow_config = config.get('mlflow', {})
@@ -356,26 +581,48 @@ def main(config_path):
     logger.info(f"Loading feature extractor for {model_name}...")
     feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
     
-    # Load and split data
-    train_df, val_df = load_and_split_data(config, logger)
+    # Load data based on source
+    if data_source == 'vimd':
+        # Load ViMD (HuggingFace format)
+        vimd_ds, val_key = load_vimd_data(config, logger)
+        
+        logger.info("Creating ViMD datasets...")
+        train_dataset = ViMDDataset(
+            hf_dataset=vimd_ds['train'],
+            feature_extractor=feature_extractor,
+            config=config,
+            is_training=True
+        )
+        
+        val_dataset = ViMDDataset(
+            hf_dataset=vimd_ds[val_key],
+            feature_extractor=feature_extractor,
+            config=config,
+            is_training=False
+        )
+    else:
+        # Load ViSpeech (CSV format)
+        train_df, val_df = load_and_split_data(config, logger)
+        
+        logger.info("Creating ViSpeech datasets...")
+        train_dataset = ViSpeechDataset(
+            dataframe=train_df,
+            audio_dir=config['data']['train_audio'],
+            feature_extractor=feature_extractor,
+            config=config,
+            is_training=True
+        )
+        
+        val_dataset = ViSpeechDataset(
+            dataframe=val_df,
+            audio_dir=config['data']['train_audio'],
+            feature_extractor=feature_extractor,
+            config=config,
+            is_training=False
+        )
     
-    # Create datasets
-    logger.info("Creating datasets...")
-    train_dataset = ViSpeechDataset(
-        dataframe=train_df,
-        audio_dir=config['data']['train_audio'],
-        feature_extractor=feature_extractor,
-        config=config,
-        is_training=True
-    )
-    
-    val_dataset = ViSpeechDataset(
-        dataframe=val_df,
-        audio_dir=config['data']['train_audio'],
-        feature_extractor=feature_extractor,
-        config=config,
-        is_training=False
-    )
+    logger.info(f"Train samples: {len(train_dataset):,}")
+    logger.info(f"Validation samples: {len(val_dataset):,}")
     
     # Load full model (encoder + heads)
     logger.info("Loading model...")

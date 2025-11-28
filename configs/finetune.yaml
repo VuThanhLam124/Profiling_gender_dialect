@@ -6,6 +6,11 @@ model:
   dropout: 0.1
   head_hidden_dim: 256
 
+# Audio processing
+audio:
+  sampling_rate: 16000
+  max_duration: 5  # seconds
+
 # Training
 training:
   batch_size: 32
@@ -17,6 +22,11 @@ training:
   lr_scheduler: "linear"
   fp16: true
   dataloader_num_workers: 4
+
+# Data Augmentation
+augmentation:
+  enabled: true
+  prob: 0.8
 
 # Loss
 loss:
@@ -30,12 +40,12 @@ mlflow:
   run_name: null
   registered_model_name: null
 
-# Dataset paths - point to folders created by prepare_data.py
-# Structure: datasets/{DatasetName}/{split}/
-#   ├── features/     # .npy files
-#   └── metadata.csv  # labels
+# Dataset paths
+# source: "vispeech" (CSV format) or "vimd" (HuggingFace format)
 data:
-  # === RAW DATASET PATHS (for prepare_data.py) ===
+  source: "vispeech"  # Options: vispeech, vimd
+  
+  # === ViSpeech (CSV format) ===
   # Root directory of ViSpeech dataset
   vispeech_root: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech"
   
@@ -52,10 +62,8 @@ data:
   # Validation split ratio (from trainset)
   val_split: 0.15
   
-  # === EXTRACTED FEATURES PATHS (for finetune.py) ===
-  # After running prepare_data.py, features will be saved here
-  train_dir: "datasets/ViSpeech/train"
-  val_dir: "datasets/ViSpeech/val"
+  # === ViMD (HuggingFace format) ===
+  # vimd_path: "/kaggle/input/vimd-dataset"  # Local path or HuggingFace dataset name
 
 # Output
 output:
@@ -68,12 +76,19 @@ early_stopping:
   patience: 3
   threshold: 0.0025
 
-# Label Mappings (must match prepare_data.py)
+# Label Mappings
 labels:
   gender:
     Male: 0
     Female: 1
+    0: 0  # Support int labels (ViMD)
+    1: 1
   dialect:
+    North: 0
+    Central: 1
+    South: 2
+  # ViMD uses 'region' column
+  region_to_dialect:
     North: 0
     Central: 1
     South: 2
