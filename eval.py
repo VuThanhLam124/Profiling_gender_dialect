@@ -2,7 +2,19 @@
 Evaluation Script for Speaker Profiling Model
 
 Usage:
-    python eval.py --config configs/eval.yaml
+    # Evaluate on pre-extracted features (recommended - fast)
+    python eval.py --checkpoint output/best_model --test_dir datasets/clean_test
+    
+    # Evaluate on both clean and noisy test sets
+    python eval.py --checkpoint output/best_model \\
+        --test_dir datasets/clean_test \\
+        --test_dir2 datasets/noisy_test
+    
+    # With custom settings
+    python eval.py --checkpoint output/best_model \\
+        --test_dir datasets/clean_test \\
+        --batch_size 64 \\
+        --output_dir results/
 """
 
 import os
@@ -13,167 +25,112 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import librosa
+from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
-from transformers import Wav2Vec2FeatureExtractor, Trainer, TrainingArguments
-from torch.utils.data import Dataset
 
-from src.models import MultiTaskSpeakerModel
-from src.utils import (
-    setup_logging,
-    get_logger,
-    load_config,
-    load_model_checkpoint,
-    preprocess_audio
-)
+from src.models import ClassificationHeadModel
+from src.utils import setup_logging, get_logger
 
 
-class ViSpeechDataset(Dataset):
-    """Dataset class for evaluation"""
+# ============================================================
+# Dataset Class
+# ============================================================
+
+class FeatureDataset(Dataset):
+    """Dataset for pre-extracted features"""
     
-    def __init__(self, dataframe, audio_dir, feature_extractor, config):
-        self.df = dataframe.reset_index(drop=True)
-        self.audio_dir = Path(audio_dir)
-        self.feature_extractor = feature_extractor
-        self.sampling_rate = config['audio']['sampling_rate']
-        self.max_duration = config['audio']['max_duration']
-        self.logger = get_logger()
+    def __init__(self, data_dir):
+        self.data_dir = Path(data_dir)
+        self.feature_dir = self.data_dir / 'features'
+        self.df = pd.read_csv(self.data_dir / 'metadata.csv')
     
     def __len__(self):
         return len(self.df)
     
-    def load_audio(self, audio_name):
-        audio_path = self.audio_dir / audio_name
-        
-        try:
-            audio, sr = librosa.load(audio_path, sr=self.sampling_rate, mono=True)
-            audio = preprocess_audio(
-                audio,
-                sampling_rate=self.sampling_rate,
-                max_duration=self.max_duration
-            )
-            return audio
-            
-        except Exception as e:
-            self.logger.error(f"Error loading {audio_path}: {e}")
-            max_length = int(self.sampling_rate * self.max_duration)
-            return np.zeros(max_length)
-    
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        audio = self.load_audio(row['audio_name'])
-        
-        inputs = self.feature_extractor(
-            audio,
-            sampling_rate=self.sampling_rate,
-            return_tensors="pt",
-            padding=True
-        )
-        
+        features = np.load(self.feature_dir / row['feature_name'])
         return {
-            'input_values': inputs.input_values.squeeze(0),
+            'input_features': torch.from_numpy(features).float(),
             'gender_labels': torch.tensor(row['gender_label'], dtype=torch.long),
             'dialect_labels': torch.tensor(row['dialect_label'], dtype=torch.long)
         }
 
 
-class MultiTaskTrainer(Trainer):
-    """Custom trainer for multi-task learning"""
-    
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        gender_labels = inputs.pop("gender_labels")
-        dialect_labels = inputs.pop("dialect_labels")
-        
-        outputs = model(
-            input_values=inputs["input_values"],
-            gender_labels=gender_labels,
-            dialect_labels=dialect_labels
-        )
-        
-        loss = outputs["loss"]
-        return (loss, outputs) if return_outputs else loss
-    
-    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
-        gender_labels = inputs.pop("gender_labels")
-        dialect_labels = inputs.pop("dialect_labels")
-        
-        with torch.no_grad():
-            outputs = model(
-                input_values=inputs["input_values"],
-                gender_labels=gender_labels,
-                dialect_labels=dialect_labels
-            )
-            loss = outputs["loss"]
-        
-        return (
-            loss,
-            (outputs["gender_logits"], outputs["dialect_logits"]),
-            (gender_labels, dialect_labels)
-        )
+# ============================================================
+# Evaluation Functions
+# ============================================================
 
-
-def compute_metrics(pred):
-    """Compute metrics for evaluation"""
-    gender_logits, dialect_logits = pred.predictions
-    gender_labels, dialect_labels = pred.label_ids
+def evaluate_model(model, dataloader, device):
+    """Run evaluation and return predictions"""
+    model.eval()
+    all_gender_preds, all_dialect_preds = [], []
+    all_gender_labels, all_dialect_labels = [], []
     
-    gender_preds = np.argmax(gender_logits, axis=-1)
-    dialect_preds = np.argmax(dialect_logits, axis=-1)
-    
-    gender_acc = accuracy_score(gender_labels, gender_preds)
-    gender_f1 = f1_score(gender_labels, gender_preds, average='weighted')
-    dialect_acc = accuracy_score(dialect_labels, dialect_preds)
-    dialect_f1 = f1_score(dialect_labels, dialect_preds, average='weighted')
+    with torch.no_grad():
+        for batch in dataloader:
+            features = batch['input_features'].to(device)
+            outputs = model(input_features=features)
+            
+            all_gender_preds.extend(outputs['gender_logits'].argmax(dim=-1).cpu().numpy())
+            all_dialect_preds.extend(outputs['dialect_logits'].argmax(dim=-1).cpu().numpy())
+            all_gender_labels.extend(batch['gender_labels'].numpy())
+            all_dialect_labels.extend(batch['dialect_labels'].numpy())
     
     return {
-        'gender_acc': gender_acc,
-        'gender_f1': gender_f1,
-        'dialect_acc': dialect_acc,
-        'dialect_f1': dialect_f1,
-        'combined_f1': (gender_f1 + dialect_f1) / 2
+        'gender_preds': np.array(all_gender_preds),
+        'dialect_preds': np.array(all_dialect_preds),
+        'gender_labels': np.array(all_gender_labels),
+        'dialect_labels': np.array(all_dialect_labels)
     }
 
 
-def evaluate_dataset(trainer, dataset, dataset_name, config):
-    """Evaluate model on a dataset and log detailed report"""
-    logger = get_logger()
+def print_results(results, dataset_name, logger):
+    """Print detailed evaluation results"""
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info(f"RESULTS ON {dataset_name.upper()}")
+    logger.info("=" * 60)
     
-    logger.info(f"EVALUATING ON {dataset_name.upper()}")
-    logger.info("-" * 50)
+    gender_acc = accuracy_score(results['gender_labels'], results['gender_preds']) * 100
+    gender_f1 = f1_score(results['gender_labels'], results['gender_preds'], average='weighted') * 100
+    dialect_acc = accuracy_score(results['dialect_labels'], results['dialect_preds']) * 100
+    dialect_f1 = f1_score(results['dialect_labels'], results['dialect_preds'], average='weighted') * 100
     
-    results = trainer.predict(dataset)
-    gender_logits, dialect_logits = results.predictions
-    gender_labels, dialect_labels = results.label_ids
+    logger.info(f"Gender  - Accuracy: {gender_acc:.2f}%  |  F1: {gender_f1:.2f}%")
+    logger.info(f"Dialect - Accuracy: {dialect_acc:.2f}%  |  F1: {dialect_f1:.2f}%")
     
-    gender_preds = np.argmax(gender_logits, axis=-1)
-    dialect_preds = np.argmax(dialect_logits, axis=-1)
+    logger.info("")
+    logger.info("--- Gender Classification Report ---")
+    report = classification_report(results['gender_labels'], results['gender_preds'],
+                                   target_names=['Male', 'Female'], digits=4)
+    for line in report.split('\n'):
+        logger.info(line)
     
-    gender_acc = accuracy_score(gender_labels, gender_preds) * 100
-    dialect_acc = accuracy_score(dialect_labels, dialect_preds) * 100
-    gender_f1 = f1_score(gender_labels, gender_preds, average='weighted') * 100
-    dialect_f1 = f1_score(dialect_labels, dialect_preds, average='weighted') * 100
+    logger.info("")
+    logger.info("--- Dialect Classification Report ---")
+    report = classification_report(results['dialect_labels'], results['dialect_preds'],
+                                   target_names=['North', 'Central', 'South'], digits=4)
+    for line in report.split('\n'):
+        logger.info(line)
     
-    logger.info("Overall Metrics:")
-    logger.info(f"  Gender  - Accuracy: {gender_acc:.2f}%  |  F1: {gender_f1:.2f}%")
-    logger.info(f"  Dialect - Accuracy: {dialect_acc:.2f}%  |  F1: {dialect_f1:.2f}%")
-    
-    logger.info("Gender Classification Report:")
-    logger.info("\n" + classification_report(gender_labels, gender_preds,
-                               target_names=['Male', 'Female'],
-                               digits=4))
-    
-    logger.info("Dialect Classification Report:")
-    logger.info("\n" + classification_report(dialect_labels, dialect_preds,
-                               target_names=['North', 'Central', 'South'],
-                               digits=4))
-    
+    logger.info("")
     logger.info("Gender Confusion Matrix:")
-    logger.info(f"\n{confusion_matrix(gender_labels, gender_preds)}")
+    cm = confusion_matrix(results['gender_labels'], results['gender_preds'])
+    logger.info(f"           Male  Female")
+    logger.info(f"Male     {cm[0][0]:6d}  {cm[0][1]:6d}")
+    logger.info(f"Female   {cm[1][0]:6d}  {cm[1][1]:6d}")
     
+    logger.info("")
     logger.info("Dialect Confusion Matrix:")
-    logger.info(f"\n{confusion_matrix(dialect_labels, dialect_preds)}")
+    cm = confusion_matrix(results['dialect_labels'], results['dialect_preds'])
+    logger.info(f"           North  Central  South")
+    logger.info(f"North    {cm[0][0]:6d}  {cm[0][1]:7d}  {cm[0][2]:5d}")
+    logger.info(f"Central  {cm[1][0]:6d}  {cm[1][1]:7d}  {cm[1][2]:5d}")
+    logger.info(f"South    {cm[2][0]:6d}  {cm[2][1]:7d}  {cm[2][2]:5d}")
     
     return {
+        'dataset': dataset_name,
         'gender_acc': gender_acc,
         'gender_f1': gender_f1,
         'dialect_acc': dialect_acc,
@@ -181,131 +138,176 @@ def evaluate_dataset(trainer, dataset, dataset_name, config):
     }
 
 
-def compare_with_baseline(clean_results, noisy_results, config):
-    """Compare results with baseline from PACLIC 2024"""
-    logger = get_logger()
-    baseline = config['baseline']
-    
-    logger.info("COMPARISON WITH BASELINE (PACLIC 2024 - ResNet34)")
-    logger.info("-" * 70)
-    header = f"{'Task':<15} {'Test Set':<12} {'Baseline':<12} {'Our Model':<12} {'Delta':<12}"
-    logger.info(header)
-    logger.info("-" * 70)
-    
-    our_results = {
-        'gender': {'clean': clean_results['gender_acc'], 'noisy': noisy_results['gender_acc']},
-        'dialect': {'clean': clean_results['dialect_acc'], 'noisy': noisy_results['dialect_acc']}
+def compare_with_baseline(results_list, logger):
+    """Compare results with PACLIC 2024 baseline"""
+    # Baseline from PACLIC 2024 (ResNet34)
+    baseline = {
+        'gender': {'clean': 95.35, 'noisy': 88.71},
+        'dialect': {'clean': 59.49, 'noisy': 45.67}
     }
     
-    for task in ['gender', 'dialect']:
-        for test_set in ['clean', 'noisy']:
-            baseline_val = baseline[task][test_set]
-            our_val = our_results[task][test_set]
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("COMPARISON WITH BASELINE (PACLIC 2024 - ResNet34)")
+    logger.info("=" * 70)
+    logger.info(f"{'Task':<10} {'Test Set':<12} {'Baseline':<15} {'Our Model':<15} {'Delta':<10}")
+    logger.info("-" * 70)
+    
+    for r in results_list:
+        dataset_name = r['dataset'].lower()
+        test_type = 'clean' if 'clean' in dataset_name else 'noisy'
+        
+        for task in ['gender', 'dialect']:
+            baseline_val = baseline[task][test_type]
+            our_val = r[f'{task}_acc']
             delta = our_val - baseline_val
-            delta_str = f"{delta:+.2f}%"
+            delta_str = f"+{delta:.2f}%" if delta > 0 else f"{delta:.2f}%"
             
-            logger.info(f"{task.capitalize():<15} {test_set.capitalize():<12} "
-                  f"{baseline_val:<12.2f} {our_val:<12.2f} {delta_str:<12}")
+            logger.info(f"{task.capitalize():<10} {test_type.capitalize():<12} "
+                       f"{baseline_val:.2f}%{'':<8} {our_val:.2f}%{'':<8} {delta_str}")
 
 
-def main(config_path):
-    """Main evaluation function"""
+def load_checkpoint(checkpoint_dir, device):
+    """Load model from checkpoint directory"""
+    checkpoint_dir = Path(checkpoint_dir)
+    
+    # Try different checkpoint formats
+    if (checkpoint_dir / 'pytorch_model.bin').exists():
+        state_dict = torch.load(checkpoint_dir / 'pytorch_model.bin', map_location=device)
+    elif (checkpoint_dir / 'model.safetensors').exists():
+        from safetensors.torch import load_file
+        state_dict = load_file(checkpoint_dir / 'model.safetensors')
+    else:
+        # Find any .bin or .pt file
+        model_files = list(checkpoint_dir.glob('*.bin')) + list(checkpoint_dir.glob('*.pt'))
+        if model_files:
+            state_dict = torch.load(model_files[0], map_location=device)
+        else:
+            raise FileNotFoundError(f"No model checkpoint found in {checkpoint_dir}")
+    
+    return state_dict
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate Speaker Profiling Model")
+    parser.add_argument("--checkpoint", type=str, required=True,
+                        help="Path to model checkpoint directory")
+    parser.add_argument("--test_dir", type=str, required=True,
+                        help="Path to test features directory (with features/ and metadata.csv)")
+    parser.add_argument("--test_dir2", type=str, default=None,
+                        help="Path to second test features directory (optional, e.g., noisy test)")
+    parser.add_argument("--batch_size", type=int, default=32,
+                        help="Batch size for evaluation")
+    parser.add_argument("--num_workers", type=int, default=2,
+                        help="Number of dataloader workers")
+    parser.add_argument("--hidden_size", type=int, default=768,
+                        help="Hidden size of encoder (768 for base, 1024 for large)")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Directory to save results JSON")
+    args = parser.parse_args()
+    
+    # Setup
     logger = setup_logging()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    logger.info("=" * 50)
+    logger.info("=" * 60)
     logger.info("SPEAKER PROFILING EVALUATION")
-    logger.info("=" * 50)
-    
-    config = load_config(config_path)
-    
-    logger.info(f"Model checkpoint: {config['model']['checkpoint']}")
-    logger.info("-" * 50)
-    
-    # Load feature extractor
-    logger.info("Loading feature extractor...")
-    feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(config['model']['checkpoint'])
+    logger.info("=" * 60)
+    logger.info(f"Device: {device}")
+    logger.info(f"Checkpoint: {args.checkpoint}")
+    logger.info(f"Test dir: {args.test_dir}")
+    if args.test_dir2:
+        logger.info(f"Test dir 2: {args.test_dir2}")
     
     # Load model
+    logger.info("")
     logger.info("Loading model...")
-    model = MultiTaskSpeakerModel(config['model']['name'])
-    model = load_model_checkpoint(model, config['model']['checkpoint'])
-    logger.info("Model loaded successfully")
-    
-    # Load test data
-    logger.info("Loading test data...")
-    
-    clean_test_df = pd.read_csv(config['data']['clean_test_meta'])
-    noisy_test_df = pd.read_csv(config['data']['noisy_test_meta'])
-    
-    gender_map = config['labels']['gender']
-    dialect_map = config['labels']['dialect']
-    
-    for df in [clean_test_df, noisy_test_df]:
-        df['gender_label'] = df['gender'].map(gender_map)
-        df['dialect_label'] = df['dialect'].map(dialect_map)
-    
-    logger.info(f"Clean test: {len(clean_test_df):,} samples")
-    logger.info(f"Noisy test: {len(noisy_test_df):,} samples")
-    
-    # Create datasets
-    clean_test_dataset = ViSpeechDataset(
-        clean_test_df, 
-        config['data']['clean_test_audio'], 
-        feature_extractor, 
-        config
+    model = ClassificationHeadModel(
+        hidden_size=args.hidden_size,
+        num_genders=2,
+        num_dialects=3,
+        dropout=0.1,
+        head_hidden_dim=256,
+        dialect_loss_weight=3.0
     )
     
-    noisy_test_dataset = ViSpeechDataset(
-        noisy_test_df, 
-        config['data']['noisy_test_audio'], 
-        feature_extractor, 
-        config
+    state_dict = load_checkpoint(args.checkpoint, device)
+    model.load_state_dict(state_dict)
+    model.to(device)
+    model.eval()
+    logger.info("Model loaded successfully!")
+    
+    # Evaluate test sets
+    results_list = []
+    
+    # Test set 1
+    logger.info("")
+    logger.info(f"Loading test data from {args.test_dir}...")
+    test_dataset = FeatureDataset(args.test_dir)
+    logger.info(f"Loaded {len(test_dataset)} samples")
+    
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        num_workers=args.num_workers
     )
     
-    # Create trainer for evaluation
-    eval_args = TrainingArguments(
-        output_dir=config['output']['dir'],
-        per_device_eval_batch_size=config['evaluation']['batch_size'],
-        dataloader_num_workers=config['evaluation']['dataloader_num_workers'],
-        remove_unused_columns=False,
-        report_to='none',
-    )
+    # Determine dataset name from path
+    test_name = Path(args.test_dir).name
+    if 'clean' in test_name.lower():
+        test_name = "Clean Test Set"
+    elif 'noisy' in test_name.lower():
+        test_name = "Noisy Test Set"
+    else:
+        test_name = "Test Set"
     
-    trainer = MultiTaskTrainer(
-        model=model,
-        args=eval_args,
-        compute_metrics=compute_metrics,
-    )
+    results = evaluate_model(model, test_loader, device)
+    metrics = print_results(results, test_name, logger)
+    results_list.append(metrics)
     
-    # Evaluate
-    clean_results = evaluate_dataset(trainer, clean_test_dataset, "Clean Test Set", config)
-    noisy_results = evaluate_dataset(trainer, noisy_test_dataset, "Noisy Test Set", config)
+    # Test set 2 (optional)
+    if args.test_dir2:
+        logger.info("")
+        logger.info(f"Loading test data from {args.test_dir2}...")
+        test_dataset2 = FeatureDataset(args.test_dir2)
+        logger.info(f"Loaded {len(test_dataset2)} samples")
+        
+        test_loader2 = DataLoader(
+            test_dataset2, 
+            batch_size=args.batch_size, 
+            shuffle=False, 
+            num_workers=args.num_workers
+        )
+        
+        test_name2 = Path(args.test_dir2).name
+        if 'clean' in test_name2.lower():
+            test_name2 = "Clean Test Set"
+        elif 'noisy' in test_name2.lower():
+            test_name2 = "Noisy Test Set"
+        else:
+            test_name2 = "Test Set 2"
+        
+        results2 = evaluate_model(model, test_loader2, device)
+        metrics2 = print_results(results2, test_name2, logger)
+        results_list.append(metrics2)
     
     # Compare with baseline
-    compare_with_baseline(clean_results, noisy_results, config)
+    compare_with_baseline(results_list, logger)
     
     # Save results
-    if config['output']['save_predictions']:
-        os.makedirs(config['output']['dir'], exist_ok=True)
-        results = {
-            'clean_test': clean_results,
-            'noisy_test': noisy_results
-        }
-        with open(os.path.join(config['output']['dir'], 'results.json'), 'w') as f:
-            json.dump(results, f, indent=2)
-        logger.info(f"Results saved to {config['output']['dir']}/results.json")
+    if args.output_dir:
+        os.makedirs(args.output_dir, exist_ok=True)
+        output_file = os.path.join(args.output_dir, 'results.json')
+        with open(output_file, 'w') as f:
+            json.dump(results_list, f, indent=2)
+        logger.info(f"Results saved to {output_file}")
     
-    logger.info("Evaluation completed!")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("EVALUATION COMPLETED!")
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate Speaker Profiling Model")
-    parser.add_argument(
-        "--config", 
-        type=str, 
-        default="configs/eval.yaml",
-        help="Path to config file"
-    )
-    args = parser.parse_args()
-    
-    main(args.config)
+    main()
