@@ -1,40 +1,80 @@
-# Inference Configuration
-# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
-# Copy this file to infer.yaml and update paths
+# Inference Configuration# Inference Configuration
 
-# Model
-model:
-  checkpoint: "path/to/best_model"
-  name: "microsoft/wavlm-base-plus"
-  head_hidden_dim: 256
+# Predict gender and dialect from audio# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
 
-# Audio Processing
-audio:
-  sampling_rate: 16000
-  max_duration: 5
+# Copy this file to infer.yaml and update paths# Copy this file to infer.yaml and update paths
 
-# Inference
-inference:
-  batch_size: 1
-  device: "cuda"
 
-# Input
-input:
-  audio_path: null
-  audio_dir: null
 
-# Output
-output:
-  dir: "output/predictions"
-  save_results: true
-  format: "json"
+# Model# Model
 
-# Label Mappings
-labels:
-  gender:
-    0: "Male"
-    1: "Female"
-  dialect:
-    0: "North"
-    1: "Central"
-    2: "South"
+model:model:
+
+  checkpoint: "path/to/best_model"  checkpoint: "path/to/best_model"
+
+  name: "microsoft/wavlm-base-plus"  name: "microsoft/wavlm-base-plus"
+
+  head_hidden_dim: 256  head_hidden_dim: 256
+
+
+
+# Audio Processing# Audio Processing
+
+audio:audio:
+
+  sampling_rate: 16000  sampling_rate: 16000
+
+  max_duration: 5  max_duration: 5
+
+
+
+# Inference# Inference
+
+inference:inference:
+
+  batch_size: 1  batch_size: 1
+
+  device: "cuda"  device: "cuda"
+
+
+
+# Input# Input
+
+input:input:
+
+  audio_path: null  audio_path: null
+
+  audio_dir: null  audio_dir: null
+
+
+
+# Output# Output
+
+output:output:
+
+  dir: "output/predictions"  dir: "output/predictions"
+
+  save_results: true  save_results: true
+
+  format: "json"  format: "json"
+
+
+
+# Label Mappings# Label Mappings
+
+labels:labels:
+
+  gender:  gender:
+
+    0: "Male"    0: "Male"
+
+    1: "Female"    1: "Female"
+
+  dialect:  dialect:
+
+    0: "North"    0: "North"
+
+    1: "Central"    1: "Central"
+
+    2: "South"    2: "South"
+

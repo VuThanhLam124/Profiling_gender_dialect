@@ -1,51 +1,104 @@
-# Evaluation Configuration
-# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
-# Copy this file to eval.yaml and update paths
+# Evaluation Configuration# Evaluation Configuration
 
-# Model
-model:
-  checkpoint: "path/to/best_model"
-  name: "microsoft/wavlm-base-plus"
-  head_hidden_dim: 256
+# Evaluate model on test sets from raw audio# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
 
-# Audio Processing
-audio:
-  sampling_rate: 16000
-  max_duration: 5
+# Copy this file to eval.yaml and update paths# Copy this file to eval.yaml and update paths
 
-# Evaluation
-evaluation:
-  batch_size: 32
-  dataloader_num_workers: 2
 
-# Data Paths (UPDATE THESE PATHS)
-data:
-  clean_test_meta: "path/to/metadata/clean_testset.csv"
-  clean_test_audio: "path/to/clean_testset"
-  noisy_test_meta: "path/to/metadata/noisy_testset.csv"
-  noisy_test_audio: "path/to/noisy_testset"
 
-# Output
-output:
-  dir: "output/evaluation"
-  save_predictions: true
-  save_confusion_matrix: true
+# Model# Model
 
-# Label Mappings
-labels:
-  gender:
-    Male: 0
-    Female: 1
-  dialect:
-    North: 0
+model:model:
+
+  checkpoint: "path/to/best_model"  checkpoint: "path/to/best_model"
+
+  name: "microsoft/wavlm-base-plus"  name: "microsoft/wavlm-base-plus"
+
+  head_hidden_dim: 256  head_hidden_dim: 256
+
+
+
+# Audio Processing# Audio Processing
+
+audio:audio:
+
+  sampling_rate: 16000  sampling_rate: 16000
+
+  max_duration: 5  max_duration: 5
+
+
+
+# Evaluation# Evaluation
+
+evaluation:evaluation:
+
+  batch_size: 32  batch_size: 32
+
+  dataloader_num_workers: 2  dataloader_num_workers: 2
+
+
+
+# Data Paths# Data Paths (UPDATE THESE PATHS)
+
+data:data:
+
+  clean_test_meta: "path/to/metadata/clean_testset.csv"  clean_test_meta: "path/to/metadata/clean_testset.csv"
+
+  clean_test_audio: "path/to/clean_testset"  clean_test_audio: "path/to/clean_testset"
+
+  noisy_test_meta: "path/to/metadata/noisy_testset.csv"  noisy_test_meta: "path/to/metadata/noisy_testset.csv"
+
+  noisy_test_audio: "path/to/noisy_testset"  noisy_test_audio: "path/to/noisy_testset"
+
+
+
+# Output# Output
+
+output:output:
+
+  dir: "output/evaluation"  dir: "output/evaluation"
+
+  save_predictions: true  save_predictions: true
+
+  save_confusion_matrix: true  save_confusion_matrix: true
+
+
+
+# Label Mappings# Label Mappings
+
+labels:labels:
+
+  gender:  gender:
+
+    Male: 0    Male: 0
+
+    Female: 1    Female: 1
+
+    0: 0  dialect:
+
+    1: 1    North: 0
+
+  dialect:    Central: 1
+
+    North: 0    South: 2
+
     Central: 1
-    South: 2
 
-# Baseline Comparison (PACLIC 2024 - ResNet34)
+    South: 2# Baseline Comparison (PACLIC 2024 - ResNet34)
+
 baseline:
-  gender:
-    clean: 98.73
-    noisy: 98.14
-  dialect:
+
+# Baseline Comparison (PACLIC 2024 - ResNet34)  gender:
+
+baseline:    clean: 98.73
+
+  gender:    noisy: 98.14
+
+    clean: 98.73  dialect:
+
+    noisy: 98.14    clean: 81.47
+
+  dialect:    noisy: 74.80
+
     clean: 81.47
     noisy: 74.80
