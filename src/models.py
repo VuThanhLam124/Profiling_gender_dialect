@@ -243,8 +243,17 @@ class MultiTaskSpeakerModel(nn.Module):
         else:
             raise ValueError("Either input_values or input_features must be provided")
         
+        # Create proper attention mask for hidden states (encoder downsamples audio)
+        # Hidden states have different sequence length than input audio
+        if attention_mask is not None and hidden_states.shape[1] != attention_mask.shape[1]:
+            # Create new mask based on hidden states length
+            batch_size, seq_len, _ = hidden_states.shape
+            pooled_mask = torch.ones(batch_size, seq_len, device=hidden_states.device)
+        else:
+            pooled_mask = attention_mask
+        
         # Attentive pooling
-        pooled, attn_weights = self.attentive_pooling(hidden_states, attention_mask)
+        pooled, attn_weights = self.attentive_pooling(hidden_states, pooled_mask)
         
         # Normalization and dropout
         pooled = self.layer_norm(pooled)
