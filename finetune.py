@@ -13,13 +13,16 @@ import random
 import argparse
 from pathlib import Path
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
 import numpy as np
 import pandas as pd
 import torch
 import librosa
 import soundfile as sf
-import mlflow
-import mlflow.pytorch
+import wandb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 from transformers import (
@@ -380,14 +383,14 @@ class MultiTaskTrainer(Trainer):
         )
 
 
-class MLflowCallback(TrainerCallback):
-    """Callback for logging metrics to MLflow"""
+class WandbCallback(TrainerCallback):
+    """Callback for logging metrics to WandB"""
     
     def __init__(self):
         self.logger = get_logger()
     
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs is None:
+        if logs is None or wandb.run is None:
             return
         
         step = state.global_step
@@ -398,10 +401,10 @@ class MLflowCallback(TrainerCallback):
                 metrics_to_log[key] = value
         
         if metrics_to_log:
-            mlflow.log_metrics(metrics_to_log, step=step)
+            wandb.log(metrics_to_log, step=step)
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        if metrics is None:
+        if metrics is None or wandb.run is None:
             return
         
         step = state.global_step
@@ -412,7 +415,7 @@ class MLflowCallback(TrainerCallback):
                 eval_metrics[f"eval_{key}" if not key.startswith("eval_") else key] = value
         
         if eval_metrics:
-            mlflow.log_metrics(eval_metrics, step=step)
+            wandb.log(eval_metrics, step=step)
 
 
 def compute_metrics(pred):
@@ -556,17 +559,31 @@ def main(config_path):
     data_source = config['data'].get('source', 'vispeech')
     logger.info(f"Data source: {data_source}")
     
-    # Setup MLflow
-    mlflow_config = config.get('mlflow', {})
-    mlflow_enabled = mlflow_config.get('enabled', True)
+    # Setup WandB
+    wandb_config = config.get('wandb', {})
+    wandb_enabled = wandb_config.get('enabled', True)
     
-    if mlflow_enabled:
-        tracking_uri = mlflow_config.get('tracking_uri', 'mlruns')
-        mlflow.set_tracking_uri(tracking_uri)
-        experiment_name = mlflow_config.get('experiment_name', 'speaker-profiling')
-        mlflow.set_experiment(experiment_name)
-        logger.info(f"MLflow tracking URI: {tracking_uri}")
-        logger.info(f"MLflow experiment: {experiment_name}")
+    if wandb_enabled:
+        wandb_api_key = wandb_config.get('api_key', 'f05e29c3466ec288e97041e0e3d541c4087096a6')
+        wandb.login(key=wandb_api_key)
+        
+        project_name = wandb_config.get('project', 'speaker-profiling')
+        run_name = wandb_config.get('run_name', None)
+        
+        wandb.init(
+            project=project_name,
+            name=run_name,
+            config={
+                "model_name": config['model']['name'],
+                "batch_size": config['training']['batch_size'],
+                "learning_rate": config['training']['learning_rate'],
+                "num_epochs": config['training']['num_epochs'],
+                "dropout": config['model']['dropout'],
+                "dialect_loss_weight": config['loss']['dialect_weight'],
+                "seed": config['seed'],
+            }
+        )
+        logger.info(f"WandB project: {project_name}")
     
     # Log config
     logger.info(f"Model: {config['model']['name']}")
@@ -666,32 +683,8 @@ def main(config_path):
     
     # Callbacks
     callbacks = [early_stopping]
-    if mlflow_enabled:
-        callbacks.append(MLflowCallback())
-    
-    # Start MLflow run
-    if mlflow_enabled:
-        run_name = mlflow_config.get('run_name', None)
-        mlflow.start_run(run_name=run_name)
-        
-        mlflow.log_params({
-            "model_name": config['model']['name'],
-            "batch_size": config['training']['batch_size'],
-            "learning_rate": config['training']['learning_rate'],
-            "num_epochs": config['training']['num_epochs'],
-            "weight_decay": config['training']['weight_decay'],
-            "warmup_ratio": config['training']['warmup_ratio'],
-            "dropout": config['model']['dropout'],
-            "dialect_loss_weight": config['loss']['dialect_weight'],
-            "augmentation_prob": config.get('augmentation', {}).get('prob', 0.8),
-            "train_samples": len(train_dataset),
-            "val_samples": len(val_dataset),
-            "total_params": total_params,
-            "trainable_params": trainable_params,
-            "seed": config['seed'],
-        })
-        
-        mlflow.log_artifact(config_path, artifact_path="config")
+    if wandb_enabled:
+        callbacks.append(WandbCallback())
     
     try:
         # Trainer
@@ -715,29 +708,18 @@ def main(config_path):
         trainer.save_model(output_dir)
         feature_extractor.save_pretrained(output_dir)
         
-        # Log model to MLflow
-        if mlflow_enabled:
+        # Log final metrics to WandB
+        if wandb_enabled and wandb.run is not None:
             final_metrics = trainer.evaluate()
-            mlflow.log_metrics({
-                f"final_{k}": v for k, v in final_metrics.items() 
-                if isinstance(v, (int, float))
-            })
-            
-            mlflow.log_artifacts(output_dir, artifact_path="model")
-            
-            mlflow.pytorch.log_model(
-                model, 
-                artifact_path="pytorch_model",
-                registered_model_name=mlflow_config.get('registered_model_name', None)
-            )
-            
-            logger.info(f"MLflow run ID: {mlflow.active_run().info.run_id}")
+            wandb.log({f"final_{k}": v for k, v in final_metrics.items() if isinstance(v, (int, float))})
+            wandb.save(os.path.join(output_dir, "*"))
+            logger.info(f"WandB run: {wandb.run.url}")
         
         logger.info("Training completed!")
         
     finally:
-        if mlflow_enabled:
-            mlflow.end_run()
+        if wandb_enabled and wandb.run is not None:
+            wandb.finish()
 
 
 if __name__ == "__main__":

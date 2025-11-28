@@ -32,13 +32,12 @@ augmentation:
 loss:
   dialect_weight: 3.0
 
-# MLflow Configuration
-mlflow:
+# WandB Configuration
+wandb:
   enabled: true
-  tracking_uri: "mlruns"
-  experiment_name: "speaker-profiling"
+  api_key: "f05e29c3466ec288e97041e0e3d541c4087096a6"
+  project: "speaker-profiling"
   run_name: null
-  registered_model_name: null
 
 # Dataset paths
 # source: "vispeech" (CSV format) or "vimd" (HuggingFace format)
