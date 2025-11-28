@@ -1,23 +1,27 @@
 """
 Finetune Script for Speaker Profiling Model
 
-Train model using pre-extracted features from dataset folders.
+Train full model (encoder + heads) from raw audio with data augmentation.
 
 Usage:
     python finetune.py --config configs/finetune.yaml
 """
 
 import os
+import random
 import argparse
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
+import librosa
 import mlflow
 import mlflow.pytorch
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 from transformers import (
+    AutoFeatureExtractor,
     Trainer,
     TrainingArguments,
     EarlyStoppingCallback,
@@ -25,7 +29,13 @@ from transformers import (
 )
 from torch.utils.data import Dataset
 
-from src.models import ClassificationHeadModelFromConfig
+try:
+    from audiomentations import Compose, AddGaussianNoise, TimeStretch, PitchShift, Shift, Gain
+    AUGMENTATION_AVAILABLE = True
+except ImportError:
+    AUGMENTATION_AVAILABLE = False
+
+from src.models import MultiTaskSpeakerModelFromConfig
 from src.utils import (
     setup_logging,
     get_logger,
@@ -36,75 +46,130 @@ from src.utils import (
 )
 
 
-class SpeakerDataset(Dataset):
-    """
-    Dataset class for speaker profiling - loads pre-extracted features from folder.
+class AudioAugmentation:
+    """Audio augmentation using audiomentations library"""
     
-    Expected folder structure:
-        datasets/ViSpeech/train/
-        ├── features/
-        │   ├── audio001.npy
-        │   └── ...
-        └── metadata.csv
+    def __init__(self, sampling_rate=16000, augment_prob=0.8):
+        self.sampling_rate = sampling_rate
+        self.augment_prob = augment_prob
+        
+        if AUGMENTATION_AVAILABLE:
+            self.augment = Compose([
+                AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
+                TimeStretch(min_rate=0.8, max_rate=1.2, leave_length_unchanged=False, p=0.5),
+                PitchShift(min_semitones=-4, max_semitones=4, p=0.5),
+                Shift(min_shift=-0.5, max_shift=0.5, p=0.3),
+                Gain(min_gain_db=-12, max_gain_db=12, p=0.5),
+            ])
+        else:
+            self.augment = None
+    
+    def __call__(self, audio):
+        if self.augment is not None and random.random() < self.augment_prob:
+            return self.augment(samples=audio, sample_rate=self.sampling_rate)
+        return audio
+
+
+class ViSpeechDataset(Dataset):
+    """
+    Dataset class for speaker profiling - loads raw audio.
+    Supports data augmentation for training.
     """
     
-    def __init__(self, data_dir: str, config: dict, is_training: bool = True):
-        """
-        Args:
-            data_dir: Path to dataset folder (e.g., 'datasets/ViSpeech/train')
-            config: Configuration dictionary
-            is_training: Whether this is training set
-        """
-        self.data_dir = Path(data_dir)
-        self.feature_dir = self.data_dir / 'features'
+    def __init__(
+        self, 
+        dataframe: pd.DataFrame, 
+        audio_dir: str, 
+        feature_extractor,
+        config: dict,
+        is_training: bool = True
+    ):
+        self.df = dataframe.reset_index(drop=True)
+        self.audio_dir = Path(audio_dir)
+        self.feature_extractor = feature_extractor
+        self.sampling_rate = config['audio']['sampling_rate']
+        self.max_length = int(self.sampling_rate * config['audio']['max_duration'])
         self.is_training = is_training
         self.logger = get_logger()
         
-        # Load metadata
-        metadata_path = self.data_dir / 'metadata.csv'
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"Metadata not found: {metadata_path}")
-        
-        self.df = pd.read_csv(metadata_path)
-        self.logger.info(f"Loaded {len(self.df)} samples from {metadata_path}")
-        
-        # Verify feature directory exists
-        if not self.feature_dir.exists():
-            raise FileNotFoundError(f"Features directory not found: {self.feature_dir}")
+        # Data augmentation (only for training)
+        augment_prob = config.get('augmentation', {}).get('prob', 0.8)
+        if is_training and AUGMENTATION_AVAILABLE:
+            self.augmentation = AudioAugmentation(self.sampling_rate, augment_prob)
+            self.logger.info(f"Augmentation ENABLED (prob={augment_prob})")
+        else:
+            self.augmentation = None
+            if is_training and not AUGMENTATION_AVAILABLE:
+                self.logger.warning("audiomentations not installed. Augmentation DISABLED.")
+            else:
+                self.logger.info("Augmentation DISABLED (validation/test)")
     
     def __len__(self):
         return len(self.df)
     
-    def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        
-        # Load pre-extracted features
-        feature_name = row['feature_name']
-        feature_path = self.feature_dir / feature_name
+    def load_audio(self, audio_name):
+        audio_path = self.audio_dir / audio_name
         
         try:
-            features = np.load(feature_path)
-            features = torch.from_numpy(features).float()
+            # Load audio
+            audio, sr = librosa.load(audio_path, sr=self.sampling_rate, mono=True)
+            
+            # Trim silence
+            audio, _ = librosa.effects.trim(audio, top_db=20)
+            
+            # Apply augmentation (training only)
+            if self.is_training and self.augmentation is not None:
+                audio = self.augmentation(audio)
+            
+            # Normalize
+            audio = audio / (np.max(np.abs(audio)) + 1e-8)
+            
+            # Pad or truncate
+            if len(audio) < self.max_length:
+                audio = np.pad(audio, (0, self.max_length - len(audio)))
+            else:
+                if self.is_training:
+                    # Random crop for training
+                    start = np.random.randint(0, len(audio) - self.max_length + 1)
+                else:
+                    # Center crop for validation/test
+                    start = (len(audio) - self.max_length) // 2
+                audio = audio[start:start + self.max_length]
+            
+            return audio
+            
         except Exception as e:
-            self.logger.error(f"Error loading {feature_path}: {e}")
-            features = torch.zeros(249, 768)  # Default shape for 5s audio
+            self.logger.error(f"Error loading {audio_path}: {e}")
+            return np.zeros(self.max_length)
+    
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        audio = self.load_audio(row['audio_name'])
+        
+        # Extract features using feature extractor
+        inputs = self.feature_extractor(
+            audio,
+            sampling_rate=self.sampling_rate,
+            return_tensors="pt",
+            padding=True
+        )
         
         return {
-            'input_features': features,
+            'input_values': inputs.input_values.squeeze(0),
             'gender_labels': torch.tensor(row['gender_label'], dtype=torch.long),
             'dialect_labels': torch.tensor(row['dialect_label'], dtype=torch.long)
         }
 
 
 class MultiTaskTrainer(Trainer):
-    """Custom trainer for multi-task learning with pre-extracted features"""
+    """Custom trainer for multi-task learning"""
     
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         gender_labels = inputs.pop("gender_labels")
         dialect_labels = inputs.pop("dialect_labels")
         
         outputs = model(
-            input_features=inputs["input_features"],
+            input_values=inputs["input_values"],
             gender_labels=gender_labels,
             dialect_labels=dialect_labels
         )
@@ -118,7 +183,7 @@ class MultiTaskTrainer(Trainer):
         
         with torch.no_grad():
             outputs = model(
-                input_features=inputs["input_features"],
+                input_values=inputs["input_values"],
                 gender_labels=gender_labels,
                 dialect_labels=dialect_labels
             )
@@ -141,7 +206,6 @@ class MLflowCallback(TrainerCallback):
         if logs is None:
             return
         
-        # Filter and log metrics
         step = state.global_step
         metrics_to_log = {}
         
@@ -156,7 +220,6 @@ class MLflowCallback(TrainerCallback):
         if metrics is None:
             return
         
-        # Log evaluation metrics
         step = state.global_step
         eval_metrics = {}
         
@@ -190,13 +253,79 @@ def compute_metrics(pred):
     }
 
 
+def load_and_split_data(config, logger):
+    """Load metadata and split by speaker"""
+    
+    # Load metadata
+    train_meta_path = config['data']['train_meta']
+    logger.info(f"Loading metadata from {train_meta_path}...")
+    
+    train_df = pd.read_csv(train_meta_path)
+    logger.info(f"Columns found: {list(train_df.columns)}")
+    
+    # Auto-detect column names (support different naming conventions)
+    col_mapping = {
+        'audio_name': ['audio_name', 'filename', 'file', 'path', 'audio_path'],
+        'gender': ['gender', 'sex'],
+        'dialect': ['dialect', 'accent', 'region'],
+        'speaker': ['speaker', 'speaker_id', 'spk_id', 'spk']
+    }
+    
+    detected_cols = {}
+    for target, candidates in col_mapping.items():
+        for col in candidates:
+            if col in train_df.columns:
+                detected_cols[target] = col
+                break
+        if target not in detected_cols:
+            raise ValueError(f"Could not find column for '{target}'. Expected one of: {candidates}")
+    
+    logger.info(f"Column mapping: {detected_cols}")
+    
+    # Rename columns to standard names
+    rename_map = {v: k for k, v in detected_cols.items() if k != v}
+    if rename_map:
+        train_df = train_df.rename(columns=rename_map)
+        logger.info(f"Renamed columns: {rename_map}")
+    
+    # Map labels
+    gender_map = config['labels']['gender']
+    dialect_map = config['labels']['dialect']
+    
+    train_df['gender_label'] = train_df['gender'].map(gender_map)
+    train_df['dialect_label'] = train_df['dialect'].map(dialect_map)
+    
+    # Split by speaker to avoid data leakage
+    val_split = config['data'].get('val_split', 0.15)
+    unique_speakers = train_df['speaker'].unique()
+    
+    train_speakers, val_speakers = train_test_split(
+        unique_speakers,
+        test_size=val_split,
+        random_state=config['seed'],
+        shuffle=True
+    )
+    
+    train_data = train_df[train_df['speaker'].isin(train_speakers)].reset_index(drop=True)
+    val_data = train_df[train_df['speaker'].isin(val_speakers)].reset_index(drop=True)
+    
+    logger.info(f"Train: {len(train_data):,} samples ({len(train_speakers)} speakers)")
+    logger.info(f"Validation: {len(val_data):,} samples ({len(val_speakers)} speakers)")
+    
+    # Verify no speaker leakage
+    assert len(set(train_speakers) & set(val_speakers)) == 0, "Speaker leakage detected!"
+    logger.info("No speaker leakage between train/val ✓")
+    
+    return train_data, val_data
+
+
 def main(config_path):
     """Main training function"""
     logger = setup_logging()
     
-    logger.info("=" * 50)
-    logger.info("SPEAKER PROFILING TRAINING")
-    logger.info("=" * 50)
+    logger.info("=" * 60)
+    logger.info("SPEAKER PROFILING TRAINING (Full Finetune)")
+    logger.info("=" * 60)
     
     # Load config
     config = load_config(config_path)
@@ -207,45 +336,50 @@ def main(config_path):
     mlflow_enabled = mlflow_config.get('enabled', True)
     
     if mlflow_enabled:
-        # Set tracking URI if provided
         tracking_uri = mlflow_config.get('tracking_uri', 'mlruns')
         mlflow.set_tracking_uri(tracking_uri)
-        
-        # Set experiment name
         experiment_name = mlflow_config.get('experiment_name', 'speaker-profiling')
         mlflow.set_experiment(experiment_name)
-        
         logger.info(f"MLflow tracking URI: {tracking_uri}")
         logger.info(f"MLflow experiment: {experiment_name}")
     
     # Log config
     logger.info(f"Model: {config['model']['name']}")
-    logger.info(f"Dataset: {config['data']['train_dir']}")
     logger.info(f"Batch Size: {config['training']['batch_size']}")
     logger.info(f"Learning Rate: {config['training']['learning_rate']}")
     logger.info(f"Epochs: {config['training']['num_epochs']}")
-    logger.info("-" * 50)
+    logger.info(f"Dialect Loss Weight: {config['loss']['dialect_weight']}x")
+    logger.info("-" * 60)
     
-    # Create datasets from pre-extracted features
-    logger.info("Loading datasets...")
-    train_dataset = SpeakerDataset(
-        data_dir=config['data']['train_dir'],
+    # Load feature extractor (auto-detect based on model type)
+    model_name = config['model']['name']
+    logger.info(f"Loading feature extractor for {model_name}...")
+    feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
+    
+    # Load and split data
+    train_df, val_df = load_and_split_data(config, logger)
+    
+    # Create datasets
+    logger.info("Creating datasets...")
+    train_dataset = ViSpeechDataset(
+        dataframe=train_df,
+        audio_dir=config['data']['train_audio'],
+        feature_extractor=feature_extractor,
         config=config,
         is_training=True
     )
     
-    val_dataset = SpeakerDataset(
-        data_dir=config['data']['val_dir'],
+    val_dataset = ViSpeechDataset(
+        dataframe=val_df,
+        audio_dir=config['data']['train_audio'],
+        feature_extractor=feature_extractor,
         config=config,
         is_training=False
     )
     
-    logger.info(f"Train: {len(train_dataset):,} samples")
-    logger.info(f"Validation: {len(val_dataset):,} samples")
-    
-    # Model (classification heads only - WavLM not needed for pre-extracted features)
+    # Load full model (encoder + heads)
     logger.info("Loading model...")
-    model = ClassificationHeadModelFromConfig(config)
+    model = MultiTaskSpeakerModelFromConfig(config)
     
     total_params, trainable_params = count_parameters(model)
     logger.info(f"Total parameters: {format_number(total_params)}")
@@ -293,11 +427,8 @@ def main(config_path):
         run_name = mlflow_config.get('run_name', None)
         mlflow.start_run(run_name=run_name)
         
-        # Log parameters
         mlflow.log_params({
             "model_name": config['model']['name'],
-            "train_dir": config['data']['train_dir'],
-            "val_dir": config['data']['val_dir'],
             "batch_size": config['training']['batch_size'],
             "learning_rate": config['training']['learning_rate'],
             "num_epochs": config['training']['num_epochs'],
@@ -305,6 +436,7 @@ def main(config_path):
             "warmup_ratio": config['training']['warmup_ratio'],
             "dropout": config['model']['dropout'],
             "dialect_loss_weight": config['loss']['dialect_weight'],
+            "augmentation_prob": config.get('augmentation', {}).get('prob', 0.8),
             "train_samples": len(train_dataset),
             "val_samples": len(val_dataset),
             "total_params": total_params,
@@ -312,7 +444,6 @@ def main(config_path):
             "seed": config['seed'],
         })
         
-        # Log config file as artifact
         mlflow.log_artifact(config_path, artifact_path="config")
     
     try:
@@ -328,26 +459,25 @@ def main(config_path):
         
         # Train
         logger.info("Starting training...")
+        logger.info(f"Steps per epoch: ~{len(train_dataset) // config['training']['batch_size']}")
         trainer.train()
         
         # Save best model
         output_dir = os.path.join(config['output']['dir'], 'best_model')
         logger.info(f"Saving model to {output_dir}...")
         trainer.save_model(output_dir)
+        feature_extractor.save_pretrained(output_dir)
         
         # Log model to MLflow
         if mlflow_enabled:
-            # Log final metrics
             final_metrics = trainer.evaluate()
             mlflow.log_metrics({
                 f"final_{k}": v for k, v in final_metrics.items() 
                 if isinstance(v, (int, float))
             })
             
-            # Log model artifacts
             mlflow.log_artifacts(output_dir, artifact_path="model")
             
-            # Log best model with MLflow PyTorch
             mlflow.pytorch.log_model(
                 model, 
                 artifact_path="pytorch_model",

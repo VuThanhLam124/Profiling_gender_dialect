@@ -2,33 +2,30 @@
 Evaluation Script for Speaker Profiling Model
 
 Usage:
-    # Evaluate on pre-extracted features (recommended - fast)
-    python eval.py --checkpoint output/best_model --test_dir datasets/clean_test
+    # Evaluate with raw audio (default - using config file)
+    python eval.py --checkpoint output/best_model --config configs/finetune.yaml \\
+        --test_name clean_test --test_name2 noisy_test
     
-    # Evaluate on both clean and noisy test sets
-    python eval.py --checkpoint output/best_model \\
-        --test_dir datasets/clean_test \\
-        --test_dir2 datasets/noisy_test
-    
-    # With custom settings
-    python eval.py --checkpoint output/best_model \\
-        --test_dir datasets/clean_test \\
-        --batch_size 64 \\
-        --output_dir results/
+    # With custom output directory
+    python eval.py --checkpoint output/best_model --config configs/finetune.yaml \\
+        --test_name clean_test --output_dir results/
 """
 
 import os
 import argparse
 import json
+import yaml
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
+import librosa
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
+from transformers import AutoFeatureExtractor
 
-from src.models import ClassificationHeadModel
+from src.models import MultiTaskSpeakerModel
 from src.utils import setup_logging, get_logger
 
 
@@ -36,25 +33,111 @@ from src.utils import setup_logging, get_logger
 # Dataset Class
 # ============================================================
 
-class FeatureDataset(Dataset):
-    """Dataset for pre-extracted features"""
+class RawAudioTestDataset(Dataset):
+    """Dataset for raw audio evaluation"""
     
-    def __init__(self, data_dir):
-        self.data_dir = Path(data_dir)
-        self.feature_dir = self.data_dir / 'features'
-        self.df = pd.read_csv(self.data_dir / 'metadata.csv')
+    def __init__(self, metadata_path, audio_dir, config, feature_extractor):
+        self.audio_dir = Path(audio_dir)
+        self.df = pd.read_csv(metadata_path)
+        self.config = config
+        self.feature_extractor = feature_extractor
+        self.sr = config.get('audio', {}).get('sampling_rate', 16000)
+        self.max_duration = config.get('audio', {}).get('max_duration', 5)
+        
+        # Auto-detect column names
+        col_mapping = {
+            'audio_name': ['audio_name', 'filename', 'file', 'path', 'audio_path'],
+            'gender': ['gender', 'sex'],
+            'dialect': ['dialect', 'accent', 'region'],
+        }
+        
+        self.col_names = {}
+        for target, candidates in col_mapping.items():
+            for col in candidates:
+                if col in self.df.columns:
+                    self.col_names[target] = col
+                    break
+        
+        # Label mappings
+        labels_config = config.get('labels', {})
+        self.gender_map = labels_config.get('gender', {'Male': 0, 'Female': 1})
+        self.dialect_map = labels_config.get('dialect', {'North': 0, 'Central': 1, 'South': 2})
     
     def __len__(self):
         return len(self.df)
     
+    def _load_audio(self, path):
+        """Load and preprocess audio"""
+        waveform, _ = librosa.load(path, sr=self.sr)
+        waveform, _ = librosa.effects.trim(waveform, top_db=20)
+        
+        # Normalize
+        max_val = np.abs(waveform).max()
+        if max_val > 0:
+            waveform = waveform / max_val
+        
+        # Truncate/pad
+        max_len = int(self.sr * self.max_duration)
+        if len(waveform) > max_len:
+            waveform = waveform[:max_len]
+        
+        return waveform
+    
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        features = np.load(self.feature_dir / row['feature_name'])
+        
+        # Get audio path (auto-detected column)
+        audio_col = self.col_names.get('audio_name', 'filename')
+        audio_path = self.audio_dir / row[audio_col]
+        waveform = self._load_audio(str(audio_path))
+        
+        # Process with feature extractor
+        inputs = self.feature_extractor(
+            waveform, 
+            sampling_rate=self.sr, 
+            return_tensors="pt",
+            padding=True
+        )
+        
+        # Get labels (auto-detected columns)
+        gender_col = self.col_names.get('gender', 'gender')
+        dialect_col = self.col_names.get('dialect', 'accent')
+        
+        gender_label = self.gender_map.get(row[gender_col], 0)
+        dialect_label = self.dialect_map.get(row[dialect_col], 0)
+        
         return {
-            'input_features': torch.from_numpy(features).float(),
-            'gender_labels': torch.tensor(row['gender_label'], dtype=torch.long),
-            'dialect_labels': torch.tensor(row['dialect_label'], dtype=torch.long)
+            'input_values': inputs.input_values.squeeze(0),
+            'gender_labels': torch.tensor(gender_label, dtype=torch.long),
+            'dialect_labels': torch.tensor(dialect_label, dtype=torch.long)
         }
+
+
+def collate_fn(batch):
+    """Custom collate function for variable length audio"""
+    max_len = max(item['input_values'].shape[0] for item in batch)
+    
+    input_values = []
+    attention_mask = []
+    
+    for item in batch:
+        seq_len = item['input_values'].shape[0]
+        # Pad
+        padded = torch.zeros(max_len)
+        padded[:seq_len] = item['input_values']
+        input_values.append(padded)
+        
+        # Attention mask
+        mask = torch.zeros(max_len)
+        mask[:seq_len] = 1.0
+        attention_mask.append(mask)
+    
+    return {
+        'input_values': torch.stack(input_values),
+        'attention_mask': torch.stack(attention_mask),
+        'gender_labels': torch.stack([item['gender_labels'] for item in batch]),
+        'dialect_labels': torch.stack([item['dialect_labels'] for item in batch])
+    }
 
 
 # ============================================================
@@ -69,8 +152,12 @@ def evaluate_model(model, dataloader, device):
     
     with torch.no_grad():
         for batch in dataloader:
-            features = batch['input_features'].to(device)
-            outputs = model(input_features=features)
+            input_values = batch['input_values'].to(device)
+            attention_mask = batch.get('attention_mask')
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+            
+            outputs = model(input_values=input_values, attention_mask=attention_mask)
             
             all_gender_preds.extend(outputs['gender_logits'].argmax(dim=-1).cpu().numpy())
             all_dialect_preds.extend(outputs['dialect_logits'].argmax(dim=-1).cpu().numpy())
@@ -192,19 +279,23 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate Speaker Profiling Model")
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to model checkpoint directory")
-    parser.add_argument("--test_dir", type=str, required=True,
-                        help="Path to test features directory (with features/ and metadata.csv)")
-    parser.add_argument("--test_dir2", type=str, default=None,
-                        help="Path to second test features directory (optional, e.g., noisy test)")
-    parser.add_argument("--batch_size", type=int, default=32,
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to config file (for dataset paths)")
+    parser.add_argument("--test_name", type=str, required=True,
+                        help="Test set name: 'clean_test' or 'noisy_test'")
+    parser.add_argument("--test_name2", type=str, default=None,
+                        help="Second test set name (optional)")
+    parser.add_argument("--batch_size", type=int, default=16,
                         help="Batch size for evaluation")
     parser.add_argument("--num_workers", type=int, default=2,
                         help="Number of dataloader workers")
-    parser.add_argument("--hidden_size", type=int, default=768,
-                        help="Hidden size of encoder (768 for base, 1024 for large)")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Directory to save results JSON")
     args = parser.parse_args()
+    
+    # Load config
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
     
     # Setup
     logger = setup_logging()
@@ -215,20 +306,25 @@ def main():
     logger.info("=" * 60)
     logger.info(f"Device: {device}")
     logger.info(f"Checkpoint: {args.checkpoint}")
-    logger.info(f"Test dir: {args.test_dir}")
-    if args.test_dir2:
-        logger.info(f"Test dir 2: {args.test_dir2}")
+    logger.info(f"Test set: {args.test_name}")
+    if args.test_name2:
+        logger.info(f"Test set 2: {args.test_name2}")
+    
+    # Load feature extractor
+    model_name = config.get('model', {}).get('name', 'microsoft/wavlm-base-plus')
+    feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
     
     # Load model
     logger.info("")
     logger.info("Loading model...")
-    model = ClassificationHeadModel(
-        hidden_size=args.hidden_size,
-        num_genders=2,
-        num_dialects=3,
-        dropout=0.1,
-        head_hidden_dim=256,
-        dialect_loss_weight=3.0
+    model_config = config.get('model', {})
+    model = MultiTaskSpeakerModel(
+        model_name=model_name,
+        num_genders=model_config.get('num_genders', 2),
+        num_dialects=model_config.get('num_dialects', 3),
+        dropout=model_config.get('dropout', 0.15),
+        head_hidden_dim=model_config.get('head_hidden_dim', 256),
+        freeze_encoder=False  # Not freezing for inference
     )
     
     state_dict = load_checkpoint(args.checkpoint, device)
@@ -237,59 +333,64 @@ def main():
     model.eval()
     logger.info("Model loaded successfully!")
     
+    # Helper to get test paths
+    def get_test_paths(test_name):
+        data_config = config.get('data', {})
+        meta_key = f"{test_name}_meta"
+        audio_key = f"{test_name}_audio"
+        return data_config.get(meta_key), data_config.get(audio_key)
+    
     # Evaluate test sets
     results_list = []
     
     # Test set 1
+    test_meta, test_audio = get_test_paths(args.test_name)
     logger.info("")
-    logger.info(f"Loading test data from {args.test_dir}...")
-    test_dataset = FeatureDataset(args.test_dir)
+    logger.info(f"Loading test data: {args.test_name}")
+    logger.info(f"  Metadata: {test_meta}")
+    logger.info(f"  Audio: {test_audio}")
+    
+    test_dataset = RawAudioTestDataset(test_meta, test_audio, config, feature_extractor)
     logger.info(f"Loaded {len(test_dataset)} samples")
     
     test_loader = DataLoader(
         test_dataset, 
         batch_size=args.batch_size, 
         shuffle=False, 
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        collate_fn=collate_fn
     )
     
-    # Determine dataset name from path
-    test_name = Path(args.test_dir).name
-    if 'clean' in test_name.lower():
-        test_name = "Clean Test Set"
-    elif 'noisy' in test_name.lower():
-        test_name = "Noisy Test Set"
-    else:
-        test_name = "Test Set"
+    # Determine display name
+    test_display = "Clean Test Set" if 'clean' in args.test_name else "Noisy Test Set"
     
     results = evaluate_model(model, test_loader, device)
-    metrics = print_results(results, test_name, logger)
+    metrics = print_results(results, test_display, logger)
     results_list.append(metrics)
     
     # Test set 2 (optional)
-    if args.test_dir2:
+    if args.test_name2:
+        test_meta2, test_audio2 = get_test_paths(args.test_name2)
         logger.info("")
-        logger.info(f"Loading test data from {args.test_dir2}...")
-        test_dataset2 = FeatureDataset(args.test_dir2)
+        logger.info(f"Loading test data: {args.test_name2}")
+        logger.info(f"  Metadata: {test_meta2}")
+        logger.info(f"  Audio: {test_audio2}")
+        
+        test_dataset2 = RawAudioTestDataset(test_meta2, test_audio2, config, feature_extractor)
         logger.info(f"Loaded {len(test_dataset2)} samples")
         
         test_loader2 = DataLoader(
             test_dataset2, 
             batch_size=args.batch_size, 
             shuffle=False, 
-            num_workers=args.num_workers
+            num_workers=args.num_workers,
+            collate_fn=collate_fn
         )
         
-        test_name2 = Path(args.test_dir2).name
-        if 'clean' in test_name2.lower():
-            test_name2 = "Clean Test Set"
-        elif 'noisy' in test_name2.lower():
-            test_name2 = "Noisy Test Set"
-        else:
-            test_name2 = "Test Set 2"
+        test_display2 = "Clean Test Set" if 'clean' in args.test_name2 else "Noisy Test Set"
         
         results2 = evaluate_model(model, test_loader2, device)
-        metrics2 = print_results(results2, test_name2, logger)
+        metrics2 = print_results(results2, test_display2, logger)
         results_list.append(metrics2)
     
     # Compare with baseline
