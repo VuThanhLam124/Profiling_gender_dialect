@@ -19,10 +19,14 @@ evaluation:
 
 # Data Paths (relative to repo root)
 data:
+  # === ViSpeech (CSV format) ===
   clean_test_meta: "/home/ubuntu/DataScience/Voice_Pro_filling/vispeech_data/ViSpeech/metadata/clean_testset.csv"
   clean_test_audio: "/home/ubuntu/DataScience/Voice_Pro_filling/vispeech_data/ViSpeech/clean_testset"
   noisy_test_meta: "/home/ubuntu/DataScience/Voice_Pro_filling/vispeech_data/ViSpeech/metadata/noisy_testset.csv"
   noisy_test_audio: "/home/ubuntu/DataScience/Voice_Pro_filling/vispeech_data/ViSpeech/noisy_testset"
+  
+  # === ViMD (HuggingFace format) ===
+  vimd_path: "/kaggle/input/vimd-dataset"
 
 # Output
 output:
@@ -38,6 +42,10 @@ labels:
     0: 0
     1: 1
   dialect:
+    North: 0
+    Central: 1
+    South: 2
+  region_to_dialect:
     North: 0
     Central: 1
     South: 2

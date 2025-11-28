@@ -12,6 +12,7 @@ Usage:
 """
 
 import os
+import io
 import argparse
 import json
 import yaml
@@ -21,9 +22,16 @@ import numpy as np
 import pandas as pd
 import torch
 import librosa
+import soundfile as sf
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 from transformers import AutoFeatureExtractor
+
+try:
+    from datasets import load_dataset
+    HF_DATASETS_AVAILABLE = True
+except ImportError:
+    HF_DATASETS_AVAILABLE = False
 
 from src.models import MultiTaskSpeakerModel
 from src.utils import setup_logging, get_logger
@@ -111,6 +119,129 @@ class RawAudioTestDataset(Dataset):
             'gender_labels': torch.tensor(gender_label, dtype=torch.long),
             'dialect_labels': torch.tensor(dialect_label, dtype=torch.long)
         }
+
+
+class ViMDTestDataset(Dataset):
+    """Dataset for ViMD evaluation (HuggingFace format)"""
+    
+    def __init__(self, hf_dataset, config, feature_extractor):
+        self.dataset = hf_dataset
+        self.config = config
+        self.feature_extractor = feature_extractor
+        self.sr = config.get('audio', {}).get('sampling_rate', 16000)
+        self.max_duration = config.get('audio', {}).get('max_duration', 5)
+        self.max_length = int(self.sr * self.max_duration)
+        
+        # Label mappings
+        labels_config = config.get('labels', {})
+        self.gender_map = labels_config.get('gender', {'Male': 0, 'Female': 1, 0: 0, 1: 1})
+        self.region_to_dialect = labels_config.get('region_to_dialect', {
+            'North': 0, 'Central': 1, 'South': 2
+        })
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def _load_audio_from_hf(self, audio_data):
+        """Load audio from HuggingFace dataset format"""
+        try:
+            audio = None
+            
+            if isinstance(audio_data, dict):
+                if 'path' in audio_data and audio_data['path']:
+                    try:
+                        audio, sr = librosa.load(audio_data['path'], sr=self.sr, mono=True)
+                    except Exception:
+                        pass
+                
+                if audio is None and 'bytes' in audio_data and audio_data['bytes']:
+                    try:
+                        audio_bytes = io.BytesIO(audio_data['bytes'])
+                        audio, sr = sf.read(audio_bytes)
+                        if len(audio.shape) > 1:
+                            audio = np.mean(audio, axis=1)
+                        if sr != self.sr:
+                            audio = librosa.resample(audio, orig_sr=sr, target_sr=self.sr)
+                    except Exception:
+                        pass
+                
+                if audio is None and 'array' in audio_data:
+                    try:
+                        audio = np.array(audio_data['array'], dtype=np.float32)
+                        sr = audio_data.get('sampling_rate', self.sr)
+                        if sr != self.sr:
+                            audio = librosa.resample(audio, orig_sr=sr, target_sr=self.sr)
+                    except Exception:
+                        pass
+            
+            elif isinstance(audio_data, str):
+                audio, sr = librosa.load(audio_data, sr=self.sr, mono=True)
+            
+            if audio is None or len(audio) == 0:
+                return np.zeros(self.max_length, dtype=np.float32)
+            
+            if len(audio.shape) > 1:
+                audio = np.mean(audio, axis=1)
+            
+            if len(audio) > 100:
+                try:
+                    audio, _ = librosa.effects.trim(audio, top_db=20)
+                except Exception:
+                    pass
+            
+            max_val = np.max(np.abs(audio))
+            if max_val > 1e-8:
+                audio = audio / max_val
+            
+            if len(audio) > self.max_length:
+                audio = audio[:self.max_length]
+            
+            return audio.astype(np.float32)
+            
+        except Exception:
+            return np.zeros(self.max_length, dtype=np.float32)
+    
+    def __getitem__(self, idx):
+        try:
+            item = self.dataset[idx]
+            audio = self._load_audio_from_hf(item.get('audio'))
+            
+            inputs = self.feature_extractor(
+                audio,
+                sampling_rate=self.sr,
+                return_tensors="pt",
+                padding=True
+            )
+            
+            gender_raw = item.get('gender', 0)
+            region = item.get('region', 'North')
+            
+            if isinstance(gender_raw, int):
+                gender_label = gender_raw
+            else:
+                gender_label = self.gender_map.get(gender_raw, 0)
+            
+            dialect_label = self.region_to_dialect.get(region, 0)
+            
+            return {
+                'input_values': inputs.input_values.squeeze(0),
+                'gender_labels': torch.tensor(gender_label, dtype=torch.long),
+                'dialect_labels': torch.tensor(dialect_label, dtype=torch.long)
+            }
+            
+        except Exception:
+            dummy_audio = np.zeros(self.max_length, dtype=np.float32)
+            inputs = self.feature_extractor(
+                dummy_audio,
+                sampling_rate=self.sr,
+                return_tensors="pt",
+                padding=True
+            )
+            return {
+                'input_values': inputs.input_values.squeeze(0),
+                'gender_labels': torch.tensor(0, dtype=torch.long),
+                'dialect_labels': torch.tensor(0, dtype=torch.long)
+            }
 
 
 def collate_fn(batch):
@@ -254,6 +385,17 @@ def compare_with_baseline(results_list, logger):
                        f"{baseline_val:.2f}%{'':<8} {our_val:.2f}%{'':<8} {delta_str}")
 
 
+def load_vimd_test_data(config):
+    """Load ViMD test dataset from HuggingFace format"""
+    if not HF_DATASETS_AVAILABLE:
+        raise ImportError("datasets library required for ViMD. Install: pip install datasets")
+    
+    vimd_path = config['data']['vimd_path']
+    ds = load_dataset(vimd_path, keep_in_memory=False)
+    
+    return ds.get('test')
+
+
 def load_checkpoint(checkpoint_dir, device):
     """Load model from checkpoint directory"""
     checkpoint_dir = Path(checkpoint_dir)
@@ -281,8 +423,8 @@ def main():
                         help="Path to model checkpoint directory")
     parser.add_argument("--config", type=str, required=True,
                         help="Path to config file (for dataset paths)")
-    parser.add_argument("--test_name", type=str, required=True,
-                        help="Test set name: 'clean_test' or 'noisy_test'")
+    parser.add_argument("--test_name", type=str, default="clean_test",
+                        help="Test set name: 'clean_test', 'noisy_test', or 'vimd_test'")
     parser.add_argument("--test_name2", type=str, default=None,
                         help="Second test set name (optional)")
     parser.add_argument("--batch_size", type=int, default=16,
@@ -324,7 +466,7 @@ def main():
         num_dialects=model_config.get('num_dialects', 3),
         dropout=model_config.get('dropout', 0.15),
         head_hidden_dim=model_config.get('head_hidden_dim', 256),
-        freeze_encoder=False  # Not freezing for inference
+        freeze_encoder=False
     )
     
     state_dict = load_checkpoint(args.checkpoint, device)
@@ -333,24 +475,31 @@ def main():
     model.eval()
     logger.info("Model loaded successfully!")
     
-    # Helper to get test paths
-    def get_test_paths(test_name):
-        data_config = config.get('data', {})
-        meta_key = f"{test_name}_meta"
-        audio_key = f"{test_name}_audio"
-        return data_config.get(meta_key), data_config.get(audio_key)
+    # Helper to create dataset
+    def create_test_dataset(test_name):
+        if test_name == 'vimd_test':
+            vimd_test = load_vimd_test_data(config)
+            logger.info(f"Loaded ViMD test: {len(vimd_test)} samples")
+            return ViMDTestDataset(vimd_test, config, feature_extractor), "ViMD Test Set"
+        else:
+            data_config = config.get('data', {})
+            meta_key = f"{test_name}_meta"
+            audio_key = f"{test_name}_audio"
+            test_meta = data_config.get(meta_key)
+            test_audio = data_config.get(audio_key)
+            logger.info(f"  Metadata: {test_meta}")
+            logger.info(f"  Audio: {test_audio}")
+            dataset = RawAudioTestDataset(test_meta, test_audio, config, feature_extractor)
+            display_name = "Clean Test Set" if 'clean' in test_name else "Noisy Test Set"
+            return dataset, display_name
     
     # Evaluate test sets
     results_list = []
     
     # Test set 1
-    test_meta, test_audio = get_test_paths(args.test_name)
     logger.info("")
     logger.info(f"Loading test data: {args.test_name}")
-    logger.info(f"  Metadata: {test_meta}")
-    logger.info(f"  Audio: {test_audio}")
-    
-    test_dataset = RawAudioTestDataset(test_meta, test_audio, config, feature_extractor)
+    test_dataset, test_display = create_test_dataset(args.test_name)
     logger.info(f"Loaded {len(test_dataset)} samples")
     
     test_loader = DataLoader(
@@ -361,22 +510,15 @@ def main():
         collate_fn=collate_fn
     )
     
-    # Determine display name
-    test_display = "Clean Test Set" if 'clean' in args.test_name else "Noisy Test Set"
-    
     results = evaluate_model(model, test_loader, device)
     metrics = print_results(results, test_display, logger)
     results_list.append(metrics)
     
     # Test set 2 (optional)
     if args.test_name2:
-        test_meta2, test_audio2 = get_test_paths(args.test_name2)
         logger.info("")
         logger.info(f"Loading test data: {args.test_name2}")
-        logger.info(f"  Metadata: {test_meta2}")
-        logger.info(f"  Audio: {test_audio2}")
-        
-        test_dataset2 = RawAudioTestDataset(test_meta2, test_audio2, config, feature_extractor)
+        test_dataset2, test_display2 = create_test_dataset(args.test_name2)
         logger.info(f"Loaded {len(test_dataset2)} samples")
         
         test_loader2 = DataLoader(
@@ -387,14 +529,13 @@ def main():
             collate_fn=collate_fn
         )
         
-        test_display2 = "Clean Test Set" if 'clean' in args.test_name2 else "Noisy Test Set"
-        
         results2 = evaluate_model(model, test_loader2, device)
         metrics2 = print_results(results2, test_display2, logger)
         results_list.append(metrics2)
     
-    # Compare with baseline
-    compare_with_baseline(results_list, logger)
+    # Compare with baseline (only for ViSpeech)
+    if 'vimd' not in args.test_name:
+        compare_with_baseline(results_list, logger)
     
     # Save results
     if args.output_dir:

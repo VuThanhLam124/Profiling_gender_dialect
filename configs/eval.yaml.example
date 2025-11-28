@@ -1,64 +1,125 @@
-# Evaluation Configuration# Evaluation Configuration
+# Evaluation Configuration# Evaluation Configuration# Evaluation Configuration
 
-# Evaluate model on test sets from raw audio# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
+# Evaluate model on test sets from raw audio
 
-# Copy this file to eval.yaml and update paths# Copy this file to eval.yaml and update paths
+# Copy this file to eval.yaml and update paths# Evaluate model on test sets from raw audio# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
 
 
 
-# Model# Model
+# Model# Copy this file to eval.yaml and update paths# Copy this file to eval.yaml and update paths
 
-model:model:
+model:
 
-  checkpoint: "path/to/best_model"  checkpoint: "path/to/best_model"
+  checkpoint: "path/to/best_model"
+
+  name: "microsoft/wavlm-base-plus"
+
+  head_hidden_dim: 256# Model# Model
+
+
+
+# Audio Processingmodel:model:
+
+audio:
+
+  sampling_rate: 16000  checkpoint: "path/to/best_model"  checkpoint: "path/to/best_model"
+
+  max_duration: 5
 
   name: "microsoft/wavlm-base-plus"  name: "microsoft/wavlm-base-plus"
 
-  head_hidden_dim: 256  head_hidden_dim: 256
+# Evaluation
+
+evaluation:  head_hidden_dim: 256  head_hidden_dim: 256
+
+  batch_size: 32
+
+  dataloader_num_workers: 2
 
 
 
-# Audio Processing# Audio Processing
+# Data Paths# Audio Processing# Audio Processing
 
-audio:audio:
+data:
 
-  sampling_rate: 16000  sampling_rate: 16000
+  # === ViSpeech (CSV format) ===audio:audio:
 
-  max_duration: 5  max_duration: 5
+  clean_test_meta: "path/to/metadata/clean_testset.csv"
 
+  clean_test_audio: "path/to/clean_testset"  sampling_rate: 16000  sampling_rate: 16000
 
+  noisy_test_meta: "path/to/metadata/noisy_testset.csv"
+
+  noisy_test_audio: "path/to/noisy_testset"  max_duration: 5  max_duration: 5
+
+  
+
+  # === ViMD (HuggingFace format) ===
+
+  vimd_path: "/path/to/vimd-dataset"
 
 # Evaluation# Evaluation
 
-evaluation:evaluation:
+# Output
 
-  batch_size: 32  batch_size: 32
+output:evaluation:evaluation:
+
+  dir: "output/evaluation"
+
+  save_predictions: true  batch_size: 32  batch_size: 32
+
+  save_confusion_matrix: true
 
   dataloader_num_workers: 2  dataloader_num_workers: 2
 
+# Label Mappings
+
+labels:
+
+  gender:
+
+    Male: 0# Data Paths# Data Paths (UPDATE THESE PATHS)
+
+    Female: 1
+
+    0: 0data:data:
+
+    1: 1
+
+  dialect:  clean_test_meta: "path/to/metadata/clean_testset.csv"  clean_test_meta: "path/to/metadata/clean_testset.csv"
+
+    North: 0
+
+    Central: 1  clean_test_audio: "path/to/clean_testset"  clean_test_audio: "path/to/clean_testset"
+
+    South: 2
+
+  region_to_dialect:  noisy_test_meta: "path/to/metadata/noisy_testset.csv"  noisy_test_meta: "path/to/metadata/noisy_testset.csv"
+
+    North: 0
+
+    Central: 1  noisy_test_audio: "path/to/noisy_testset"  noisy_test_audio: "path/to/noisy_testset"
+
+    South: 2
 
 
-# Data Paths# Data Paths (UPDATE THESE PATHS)
 
-data:data:
+# Baseline Comparison (PACLIC 2024 - ResNet34)
 
-  clean_test_meta: "path/to/metadata/clean_testset.csv"  clean_test_meta: "path/to/metadata/clean_testset.csv"
+baseline:# Output# Output
 
-  clean_test_audio: "path/to/clean_testset"  clean_test_audio: "path/to/clean_testset"
+  gender:
 
-  noisy_test_meta: "path/to/metadata/noisy_testset.csv"  noisy_test_meta: "path/to/metadata/noisy_testset.csv"
+    clean: 98.73output:output:
 
-  noisy_test_audio: "path/to/noisy_testset"  noisy_test_audio: "path/to/noisy_testset"
+    noisy: 98.14
 
+  dialect:  dir: "output/evaluation"  dir: "output/evaluation"
 
+    clean: 81.47
 
-# Output# Output
+    noisy: 74.80  save_predictions: true  save_predictions: true
 
-output:output:
-
-  dir: "output/evaluation"  dir: "output/evaluation"
-
-  save_predictions: true  save_predictions: true
 
   save_confusion_matrix: true  save_confusion_matrix: true
 
