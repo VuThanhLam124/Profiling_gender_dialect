@@ -46,24 +46,17 @@ data:
   source: "vispeech"  # Options: vispeech, vimd
   
   # === ViSpeech (CSV format) ===
-  # Root directory of ViSpeech dataset
   vispeech_root: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech"
-  
-  # Training set
   train_meta: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/metadata/trainset.csv"
   train_audio: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/trainset"
-  
-  # Test sets
   clean_test_meta: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/metadata/clean_testset.csv"
   clean_test_audio: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/clean_testset"
   noisy_test_meta: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/metadata/noisy_testset.csv"
   noisy_test_audio: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/noisy_testset"
-  
-  # Validation split ratio (from trainset)
   val_split: 0.15
   
   # === ViMD (HuggingFace format) ===
-  # vimd_path: "/kaggle/input/vimd-dataset"  # Local path or HuggingFace dataset name
+  vimd_path: "/kaggle/input/vimd-dataset"
 
 # Output
 output:
