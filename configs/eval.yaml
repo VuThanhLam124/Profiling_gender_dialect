@@ -35,6 +35,8 @@ labels:
   gender:
     Male: 0
     Female: 1
+    0: 0
+    1: 1
   dialect:
     North: 0
     Central: 1
