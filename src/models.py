@@ -1,15 +1,78 @@
 """
 Model Architecture for Speaker Profiling
-WavLM + Attentive Pooling + LayerNorm
+Supports multiple encoders: WavLM, HuBERT, Wav2Vec2, Whisper
+Architecture: Encoder + Attentive Pooling + LayerNorm + Classification Heads
 """
 
 import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import WavLMModel
+from transformers import (
+    WavLMModel,
+    HubertModel,
+    Wav2Vec2Model,
+    WhisperModel,
+    AutoConfig
+)
 
 logger = logging.getLogger("speaker_profiling")
+
+
+# Encoder registry - maps model type to class and hidden size
+ENCODER_REGISTRY = {
+    # WavLM variants
+    "microsoft/wavlm-base": {"class": WavLMModel, "hidden_size": 768},
+    "microsoft/wavlm-base-plus": {"class": WavLMModel, "hidden_size": 768},
+    "microsoft/wavlm-large": {"class": WavLMModel, "hidden_size": 1024},
+    
+    # HuBERT variants
+    "facebook/hubert-base-ls960": {"class": HubertModel, "hidden_size": 768},
+    "facebook/hubert-large-ls960-ft": {"class": HubertModel, "hidden_size": 1024},
+    "facebook/hubert-xlarge-ls960-ft": {"class": HubertModel, "hidden_size": 1280},
+    
+    # Wav2Vec2 variants
+    "facebook/wav2vec2-base": {"class": Wav2Vec2Model, "hidden_size": 768},
+    "facebook/wav2vec2-base-960h": {"class": Wav2Vec2Model, "hidden_size": 768},
+    "facebook/wav2vec2-large": {"class": Wav2Vec2Model, "hidden_size": 1024},
+    "facebook/wav2vec2-large-960h": {"class": Wav2Vec2Model, "hidden_size": 1024},
+    "facebook/wav2vec2-xls-r-300m": {"class": Wav2Vec2Model, "hidden_size": 1024},
+    
+    # Whisper variants (encoder only)
+    "openai/whisper-tiny": {"class": WhisperModel, "hidden_size": 384, "is_whisper": True},
+    "openai/whisper-base": {"class": WhisperModel, "hidden_size": 512, "is_whisper": True},
+    "openai/whisper-small": {"class": WhisperModel, "hidden_size": 768, "is_whisper": True},
+    "openai/whisper-medium": {"class": WhisperModel, "hidden_size": 1024, "is_whisper": True},
+    "openai/whisper-large": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
+    "openai/whisper-large-v2": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
+    "openai/whisper-large-v3": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
+}
+
+
+def get_encoder_info(model_name: str) -> dict:
+    """Get encoder class and hidden size for a model name"""
+    if model_name in ENCODER_REGISTRY:
+        return ENCODER_REGISTRY[model_name]
+    
+    # Try to auto-detect from config
+    try:
+        config = AutoConfig.from_pretrained(model_name)
+        hidden_size = getattr(config, 'hidden_size', 768)
+        
+        if 'wavlm' in model_name.lower():
+            return {"class": WavLMModel, "hidden_size": hidden_size}
+        elif 'hubert' in model_name.lower():
+            return {"class": HubertModel, "hidden_size": hidden_size}
+        elif 'wav2vec2' in model_name.lower():
+            return {"class": Wav2Vec2Model, "hidden_size": hidden_size}
+        elif 'whisper' in model_name.lower():
+            return {"class": WhisperModel, "hidden_size": hidden_size, "is_whisper": True}
+        else:
+            # Default to Wav2Vec2 architecture
+            return {"class": Wav2Vec2Model, "hidden_size": hidden_size}
+    except Exception as e:
+        logger.warning(f"Could not auto-detect encoder for {model_name}: {e}")
+        return {"class": WavLMModel, "hidden_size": 768}
 
 
 class AttentivePooling(nn.Module):
@@ -55,9 +118,9 @@ class MultiTaskSpeakerModel(nn.Module):
     Multi-task model for gender and dialect classification
     
     Architecture:
-        Audio -> WavLM -> Last Hidden [B,T,768]
+        Audio -> Encoder (WavLM/HuBERT/Wav2Vec2/Whisper) -> Last Hidden [B,T,H]
                               |
-                     Attentive Pooling [B,768]
+                     Attentive Pooling [B,H]
                               |
                      Layer Normalization
                               |
@@ -69,13 +132,19 @@ class MultiTaskSpeakerModel(nn.Module):
               |                               |
             [B,2]                           [B,3]
     
+    Supported encoders:
+        - WavLM: microsoft/wavlm-base-plus, microsoft/wavlm-large
+        - HuBERT: facebook/hubert-base-ls960, facebook/hubert-large-ls960-ft
+        - Wav2Vec2: facebook/wav2vec2-base, facebook/wav2vec2-large-960h
+        - Whisper: openai/whisper-base, openai/whisper-small, openai/whisper-medium
+    
     Args:
-        model_name: Pretrained WavLM model name or path
+        model_name: Pretrained encoder model name or path
         num_genders: Number of gender classes (default: 2)
         num_dialects: Number of dialect classes (default: 3)
         dropout: Dropout probability (default: 0.1)
         head_hidden_dim: Hidden dimension for classification heads (default: 256)
-        freeze_encoder: Whether to freeze WavLM encoder (default: False)
+        freeze_encoder: Whether to freeze encoder (default: False)
         dialect_loss_weight: Weight for dialect loss in multi-task learning (default: 3.0)
     """
     
@@ -91,16 +160,29 @@ class MultiTaskSpeakerModel(nn.Module):
     ):
         super().__init__()
         
+        self.model_name = model_name
         self.dialect_loss_weight = dialect_loss_weight
         
-        # Load pretrained WavLM
-        self.wavlm = WavLMModel.from_pretrained(model_name)
-        hidden_size = self.wavlm.config.hidden_size
+        # Get encoder info and load model
+        encoder_info = get_encoder_info(model_name)
+        encoder_class = encoder_info["class"]
+        self.is_whisper = encoder_info.get("is_whisper", False)
+        
+        logger.info(f"Loading encoder: {model_name}")
+        logger.info(f"Encoder class: {encoder_class.__name__}")
+        
+        # Load pretrained encoder
+        self.encoder = encoder_class.from_pretrained(model_name)
+        hidden_size = self.encoder.config.hidden_size
+        self.hidden_size = hidden_size
+        
+        logger.info(f"Hidden size: {hidden_size}")
         
         # Optionally freeze encoder
         if freeze_encoder:
-            for param in self.wavlm.parameters():
+            for param in self.encoder.parameters():
                 param.requires_grad = False
+            logger.info("Encoder weights frozen")
         
         # Pooling and normalization
         self.attentive_pooling = AttentivePooling(hidden_size)
@@ -139,7 +221,7 @@ class MultiTaskSpeakerModel(nn.Module):
         
         Args:
             input_values: Audio waveform [B, T] (for raw audio mode)
-            input_features: Pre-extracted WavLM features [B, T, H] (for cached mode)
+            input_features: Pre-extracted features [B, T, H] (for cached mode)
             attention_mask: Attention mask [B, T]
             gender_labels: Gender labels [B] (optional, for training)
             dialect_labels: Dialect labels [B] (optional, for training)
@@ -156,9 +238,8 @@ class MultiTaskSpeakerModel(nn.Module):
             # Use pre-extracted features directly
             hidden_states = input_features
         elif input_values is not None:
-            # Extract features from WavLM
-            outputs = self.wavlm(input_values, attention_mask=attention_mask)
-            hidden_states = outputs.last_hidden_state  # [B, T, H]
+            # Extract features from encoder
+            hidden_states = self._encode(input_values, attention_mask)
         else:
             raise ValueError("Either input_values or input_features must be provided")
         
@@ -188,6 +269,32 @@ class MultiTaskSpeakerModel(nn.Module):
             'attention_weights': attn_weights
         }
     
+    def _encode(
+        self, 
+        input_values: torch.Tensor, 
+        attention_mask: torch.Tensor = None
+    ) -> torch.Tensor:
+        """
+        Extract hidden states from encoder
+        
+        Args:
+            input_values: Audio waveform [B, T]
+            attention_mask: Attention mask [B, T]
+        
+        Returns:
+            hidden_states: Hidden states [B, T, H]
+        """
+        if self.is_whisper:
+            # Whisper uses encoder-decoder, we only use encoder
+            outputs = self.encoder.encoder(input_values)
+            hidden_states = outputs.last_hidden_state
+        else:
+            # WavLM, HuBERT, Wav2Vec2
+            outputs = self.encoder(input_values, attention_mask=attention_mask)
+            hidden_states = outputs.last_hidden_state
+        
+        return hidden_states
+    
     def get_embeddings(
         self, 
         input_values: torch.Tensor, 
@@ -203,8 +310,7 @@ class MultiTaskSpeakerModel(nn.Module):
         Returns:
             embeddings: Speaker embeddings [B, H]
         """
-        outputs = self.wavlm(input_values, attention_mask=attention_mask)
-        hidden_states = outputs.last_hidden_state
+        hidden_states = self._encode(input_values, attention_mask)
         pooled, _ = self.attentive_pooling(hidden_states, attention_mask)
         pooled = self.layer_norm(pooled)
         return pooled
@@ -212,8 +318,9 @@ class MultiTaskSpeakerModel(nn.Module):
 
 class MultiTaskSpeakerModelFromConfig(MultiTaskSpeakerModel):
     """
-    Multi-task model initialized from OmegaConf config (includes WavLM encoder)
+    Multi-task model initialized from OmegaConf config
     
+    Supports multiple encoders: WavLM, HuBERT, Wav2Vec2, Whisper
     Use this for inference with raw audio input.
     
     Usage:
@@ -234,18 +341,18 @@ class MultiTaskSpeakerModelFromConfig(MultiTaskSpeakerModel):
             dialect_loss_weight=config.get('loss', {}).get('dialect_weight', 3.0)
         )
         
-        logger.info("Architecture: WavLM + Attentive Pooling + LayerNorm")
-        logger.info(f"Hidden size: {self.wavlm.config.hidden_size}")
+        logger.info(f"Architecture: {model_config['name']} + Attentive Pooling + LayerNorm")
+        logger.info(f"Hidden size: {self.hidden_size}")
         logger.info(f"Head hidden dim: {model_config.get('head_hidden_dim', 256)}")
         logger.info(f"Dropout: {model_config.get('dropout', 0.1)}")
 
 
 class ClassificationHeadModel(nn.Module):
     """
-    Lightweight model with only classification heads (no WavLM encoder).
+    Lightweight model with only classification heads (no encoder).
     
     Use this for training with pre-extracted features to save memory.
-    WavLM hidden_size is typically 768.
+    Hidden_size depends on encoder: WavLM-base=768, WavLM-large=1024, etc.
     
     Usage:
         model = ClassificationHeadModel(config)

@@ -235,8 +235,18 @@ DATASET_REGISTRY = {
 
 class FeatureExtractor:
     """
-    Extract and cache WavLM features from audio.
+    Extract and cache features from audio using various encoders.
+    
+    Supports: WavLM, HuBERT, Wav2Vec2, Whisper
     """
+    
+    # Encoder registry
+    ENCODER_TYPES = {
+        'wavlm': 'WavLMModel',
+        'hubert': 'HubertModel',
+        'wav2vec2': 'Wav2Vec2Model',
+        'whisper': 'WhisperModel',
+    }
     
     def __init__(
         self,
@@ -245,21 +255,43 @@ class FeatureExtractor:
     ):
         self.logger = get_logger()
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model_name = model_name
         
-        self.logger.info(f"Loading WavLM model: {model_name}")
+        self.logger.info(f"Loading encoder: {model_name}")
         self.logger.info(f"Device: {self.device}")
         
-        self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
-        self.model = WavLMModel.from_pretrained(model_name)
+        # Detect encoder type
+        self.is_whisper = 'whisper' in model_name.lower()
+        
+        # Load appropriate model and feature extractor
+        if self.is_whisper:
+            from transformers import WhisperModel, WhisperFeatureExtractor
+            self.feature_extractor = WhisperFeatureExtractor.from_pretrained(model_name)
+            self.model = WhisperModel.from_pretrained(model_name)
+        elif 'hubert' in model_name.lower():
+            from transformers import HubertModel, Wav2Vec2FeatureExtractor
+            self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
+            self.model = HubertModel.from_pretrained(model_name)
+        elif 'wav2vec2' in model_name.lower():
+            from transformers import Wav2Vec2Model, Wav2Vec2FeatureExtractor
+            self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
+            self.model = Wav2Vec2Model.from_pretrained(model_name)
+        else:
+            # Default: WavLM
+            from transformers import WavLMModel, Wav2Vec2FeatureExtractor
+            self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
+            self.model = WavLMModel.from_pretrained(model_name)
+        
         self.model.to(self.device)
         self.model.eval()
         
-        self.logger.info("WavLM model loaded successfully")
+        self.hidden_size = self.model.config.hidden_size
+        self.logger.info(f"Encoder loaded successfully (hidden_size={self.hidden_size})")
     
     @torch.no_grad()
     def extract(self, audio: np.ndarray, sampling_rate: int = 16000) -> np.ndarray:
         """
-        Extract WavLM features from audio.
+        Extract features from audio.
         
         Args:
             audio: Audio waveform
@@ -268,15 +300,25 @@ class FeatureExtractor:
         Returns:
             Feature array of shape [T, hidden_size]
         """
-        inputs = self.feature_extractor(
-            audio,
-            sampling_rate=sampling_rate,
-            return_tensors="pt",
-            padding=True
-        )
-        
-        input_values = inputs.input_values.to(self.device)
-        outputs = self.model(input_values)
+        if self.is_whisper:
+            # Whisper uses mel spectrogram input
+            inputs = self.feature_extractor(
+                audio,
+                sampling_rate=sampling_rate,
+                return_tensors="pt"
+            )
+            input_features = inputs.input_features.to(self.device)
+            outputs = self.model.encoder(input_features)
+        else:
+            # WavLM, HuBERT, Wav2Vec2
+            inputs = self.feature_extractor(
+                audio,
+                sampling_rate=sampling_rate,
+                return_tensors="pt",
+                padding=True
+            )
+            input_values = inputs.input_values.to(self.device)
+            outputs = self.model(input_values)
         
         # Get last hidden state [1, T, hidden_size] -> [T, hidden_size]
         features = outputs.last_hidden_state.squeeze(0).cpu().numpy()

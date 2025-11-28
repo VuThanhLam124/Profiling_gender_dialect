@@ -2,13 +2,17 @@
 
 Identify gender and dialect (region) from Vietnamese speech using deep learning.
 
-**Model Architecture:** WavLM + Attentive Pooling + LayerNorm
+**Model Architecture:** Encoder + Attentive Pooling + LayerNorm + Classification Heads
+
+**Supported Encoders:** WavLM, HuBERT, Wav2Vec2, Whisper
 
 ## Features
 
 - Gender classification: Male / Female
 - Dialect classification: North / Central / South (Vietnamese regions)
+- Multiple encoder support for comparison experiments
 - Web interface with Gradio
+- MLflow experiment tracking
 - Support multiple audio formats: WAV, MP3, FLAC, OGG, M4A
 
 ## Installation
@@ -28,17 +32,21 @@ pip install -r requirements.txt
 Profiling_gender_dialect/
 ├── src/
 │   ├── __init__.py
-│   ├── models.py          # Model architecture
-│   └── utils.py           # Utility functions
+│   ├── models.py              # Model architecture (multi-encoder support)
+│   └── utils.py               # Utility functions
 ├── configs/
-│   ├── finetune.yaml      # Training config
-│   ├── eval.yaml          # Evaluation config
-│   └── infer.yaml         # Inference config
-├── app.py                 # Gradio web interface
-├── finetune.py            # Training script
-├── eval.py                # Evaluation script
-├── infer.py               # Inference script
-├── prepare_data.py        # Data preparation script
+│   ├── finetune.yaml          # Training config
+│   ├── finetune.yaml.example  # Config template
+│   ├── eval.yaml              # Evaluation config
+│   └── infer.yaml             # Inference config
+├── notebooks/
+│   └── speaker-profiling.ipynb  # Kaggle notebook
+├── app.py                     # Gradio web interface
+├── finetune.py                # Training script
+├── eval.py                    # Evaluation script
+├── infer.py                   # Inference script
+├── prepare_data.py            # Feature extraction script
+├── compare_encoders.py        # Encoder comparison script
 ├── requirements.txt
 └── README.md
 ```
@@ -95,41 +103,40 @@ Metadata CSV columns: `audio_name`, `speaker`, `gender` (Male/Female), `dialect`
 
 ### 1. Feature Extraction (Required)
 
-Extract WavLM features and save to dataset-specific folders. **Run once, reuse many times** for experiments with different hyperparameters.
+Extract encoder features and save to dataset-specific folders. **Run once per encoder, reuse many times** for experiments.
 
 ```bash
-# Extract features for training set
+# Extract features for training set (default: WavLM)
 python prepare_data.py --dataset vispeech \
+    --config configs/finetune.yaml \
     --split train \
     --output_dir datasets/ViSpeech/train
 
 # Extract features for validation set
 python prepare_data.py --dataset vispeech \
+    --config configs/finetune.yaml \
     --split val \
     --output_dir datasets/ViSpeech/val
 
 # Extract features for test sets
 python prepare_data.py --dataset vispeech \
+    --config configs/finetune.yaml \
     --split clean_test \
     --output_dir datasets/ViSpeech/clean_test
-
-python prepare_data.py --dataset vispeech \
-    --split noisy_test \
-    --output_dir datasets/ViSpeech/noisy_test
 ```
 
 **Output structure:**
 ```
 datasets/ViSpeech/train/
-├── features/           # Pre-extracted WavLM hidden states
-│   ├── audio001.npy    # Shape: [T, 768]
+├── features/           # Pre-extracted hidden states
+│   ├── audio001.npy    # Shape: [T, hidden_size]
 │   ├── audio002.npy
 │   └── ...
 └── metadata.csv        # Labels: audio_name, gender, dialect, gender_label, dialect_label, feature_name
 ```
 
 **Benefits:**
-- Skip WavLM forward pass during training → faster experiments
+- Skip encoder forward pass during training - faster experiments
 - Easily switch datasets by changing paths in config
 - Support multiple datasets: `datasets/ViSpeech/`, `datasets/ViMD/`, etc.
 
@@ -216,13 +223,13 @@ Open browser at `http://localhost:7860`
       Audio Input
           |
           v
-WavLM Encoder (pretrained)
+Encoder (WavLM/HuBERT/Wav2Vec2/Whisper)
           |
           v
-Hidden States [B, T, 768]
+Hidden States [B, T, H]
           |
           v
-Attentive Pooling [B, 768]
+Attentive Pooling [B, H]
           |
           v
   Layer Normalization
@@ -240,6 +247,55 @@ Gender Head    Dialect Head
   [B, 2]          [B, 3]
 ```
 
+### Supported Encoders
+
+| Encoder | Model Name | Hidden Size |
+|---------|------------|-------------|
+| WavLM Base | `microsoft/wavlm-base-plus` | 768 |
+| WavLM Large | `microsoft/wavlm-large` | 1024 |
+| HuBERT Base | `facebook/hubert-base-ls960` | 768 |
+| HuBERT Large | `facebook/hubert-large-ls960-ft` | 1024 |
+| Wav2Vec2 Base | `facebook/wav2vec2-base-960h` | 768 |
+| Wav2Vec2 Large | `facebook/wav2vec2-large-960h` | 1024 |
+| Whisper Small | `openai/whisper-small` | 768 |
+| Whisper Medium | `openai/whisper-medium` | 1024 |
+
+## Encoder Comparison
+
+Compare different encoders with the same architecture:
+
+```bash
+# Compare all encoders
+python compare_encoders.py \
+    --config configs/finetune.yaml \
+    --output_dir results/encoder_comparison
+
+# Compare specific encoders
+python compare_encoders.py \
+    --config configs/finetune.yaml \
+    --output_dir results/encoder_comparison \
+    --encoders wavlm-base hubert-base wav2vec2-base whisper-small
+```
+
+**Output:**
+```
+results/encoder_comparison/
+├── features/                    # Extracted features per encoder
+├── checkpoints/                 # Trained models per encoder
+├── comparison_results.csv       # Results table
+├── comparison_results.md        # Markdown report
+└── comparison.log
+```
+
+**Example Results:**
+
+| Encoder | Gender Acc | Dialect Acc | Time (min) |
+|---------|------------|-------------|------------|
+| WavLM Base Plus | 0.9512 | 0.8234 | 25.3 |
+| HuBERT Base | 0.9456 | 0.8156 | 24.1 |
+| Wav2Vec2 Base | 0.9389 | 0.7989 | 23.8 |
+| Whisper Small | 0.9234 | 0.7756 | 28.5 |
+
 ## Labels
 
 | Gender | Code | Dialect | Code |
@@ -253,10 +309,10 @@ Gender Head    Dialect Head
 Key parameters in config files:
 
 ```yaml
-# Model (classification heads only for training)
+# Model - supports multiple encoders
 model:
-  name: "microsoft/wavlm-base-plus"  # For reference
-  hidden_size: 768                   # WavLM hidden dimension
+  name: "microsoft/wavlm-base-plus"  # or hubert, wav2vec2, whisper
+  hidden_size: 768                   # Depends on encoder
   dropout: 0.1
   head_hidden_dim: 256
 
@@ -283,6 +339,15 @@ loss:
   dialect_weight: 3.0  # Higher weight for dialect task
 ```
 
+## Kaggle Training
+
+Use the provided notebook for training on Kaggle with free GPU:
+
+1. Upload `notebooks/speaker-profiling.ipynb` to Kaggle
+2. Add ViSpeech dataset to the notebook
+3. Enable GPU accelerator (T4 or P100)
+4. Run all cells
+
 ## License
 
 MIT License
@@ -305,3 +370,6 @@ If you use this code, please cite:
 
 - ViSpeech dataset: https://github.com/TranNguyenNB/ViSpeech
 - WavLM: https://github.com/microsoft/unilm/tree/master/wavlm
+- HuBERT: https://github.com/facebookresearch/fairseq/tree/main/examples/hubert
+- Wav2Vec2: https://github.com/facebookresearch/fairseq/tree/main/examples/wav2vec
+- Whisper: https://github.com/openai/whisper
