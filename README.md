@@ -1,94 +1,145 @@
-# Vietnamese Speaker Profiling# Vietnamese Speaker Profiling# Vietnamese Speaker Profiling
+# Vietnamese Speaker Profiling# Vietnamese Speaker Profiling
 
 
 
-Identify gender and dialect (region) from Vietnamese speech using deep learning.
+Identify **gender** and **dialect** from Vietnamese speech using deep learning.Identify gender and dialect (region) from Vietnamese speech using deep learning.
 
 
 
-**Model Architecture:** Encoder + Attentive Pooling + LayerNorm + Classification HeadsIdentify gender and dialect (region) from Vietnamese speech using deep learning.Identify gender and dialect (region) from Vietnamese speech using deep learning.
+## Quick Start**Model Architecture:** Encoder + Attentive Pooling + LayerNorm + Classification Heads
 
 
 
-**Supported Encoders:** WavLM, HuBERT, Wav2Vec2, Whisper
+```bash**Supported Encoders:** WavLM, HuBERT, Wav2Vec2, Whisper
 
+# Clone & Install
 
+git clone https://github.com/VuThanhLam124/Profiling_gender_dialect.git
 
-**Supported Datasets:** ViSpeech (CSV), ViMD (HuggingFace)**Model Architecture:** Encoder + Attentive Pooling + LayerNorm + Classification Heads**Model Architecture:** Encoder + Attentive Pooling + LayerNorm + Classification Heads
+cd Profiling_gender_dialect## Features
 
+pip install -r requirements.txt
 
+- Gender classification: Male / Female
 
-## Features
+# Train- Dialect classification: North / Central / South (Vietnamese regions)
 
-
-
-- Gender classification: Male / Female**Supported Encoders:** WavLM, HuBERT, Wav2Vec2, Whisper**Supported Encoders:** WavLM, HuBERT, Wav2Vec2, Whisper
-
-- Dialect classification: North / Central / South (Vietnamese regions)
-
-- Full model finetuning from raw audio
+python finetune.py --config configs/finetune.yaml- Full model finetuning from raw audio
 
 - Data augmentation for improved generalization
 
-- Multiple encoder support for comparison experiments## Features## Features
+# Evaluate- Multiple encoder support for comparison experiments## Features## Features
 
-- Multiple dataset support (ViSpeech, ViMD)
+python eval.py --checkpoint outputs/best_model --config configs/eval.yaml --test_name clean_test- Multiple dataset support (ViSpeech, ViMD)
 
 - Web interface with Gradio
 
-- MLflow experiment tracking
+# Inference- MLflow experiment tracking
 
-- Support multiple audio formats: WAV, MP3, FLAC, OGG, M4A- Gender classification: Male / Female- Gender classification: Male / Female
+python infer.py --audio path/to/audio.wav --checkpoint outputs/best_model- Support multiple audio formats: WAV, MP3, FLAC, OGG, M4A
 
+```- Gender classification: Male / Female
 
+- Dialect classification: North / Central / South (Vietnamese regions)
 
-## Installation- Dialect classification: North / Central / South (Vietnamese regions)- Dialect classification: North / Central / South (Vietnamese regions)
+## Datasets- Full model finetuning from raw audio
 
+- Multiple encoder support for comparison experiments
 
+| Dataset | Format | Config Option |
 
-```bash- Full model finetuning from raw audio- Multiple encoder support for comparison experiments
+|---------|--------|---------------|# Clone repository
 
-# Clone repository
+| **ViSpeech** | CSV + audio files | `data.source: "vispeech"` |
 
-git clone https://github.com/VuThanhLam124/Profiling_gender_dialect.git- Data augmentation for improved generalization- Web interface with Gradio
+| **ViMD** | HuggingFace | `data.source: "vimd"` |git clone https://github.com/VuThanhLam124/Profiling_gender_dialect.git
 
 cd Profiling_gender_dialect
 
-- Multiple encoder support for comparison experiments- MLflow experiment tracking
+- **ViSpeech**: [Download](https://drive.google.com/file/d/1-BbOHf42o6eBje2WqQiiRKMtNxmZiRf9/view) \| [Reference](https://github.com/TranNguyenNB/ViSpeech)
 
-# Install dependencies
-
-pip install -r requirements.txt- Web interface with Gradio- Support multiple audio formats: WAV, MP3, FLAC, OGG, M4A
-
-```
+- **ViMD**: `/kaggle/input/vimd-dataset` (Kaggle)- Multiple encoder support for comparison experiments
 
 - MLflow experiment tracking
 
-## Project Structure
+## Configuration
 
-- Support multiple audio formats: WAV, MP3, FLAC, OGG, M4A## Installation
+# Install dependencies
+
+Edit `configs/finetune.yaml`:
+
+pip install -r requirements.txt
+
+```yaml- Web interface with Gradio
+
+model:- Support multiple audio formats: WAV, MP3, FLAC, OGG, M4A
+
+  encoder_type: "wavlm"  # wavlm, hubert, wav2vec2, whisper
 
 ```
 
+data:
+
+  source: "vispeech"     # vispeech or vimd- MLflow experiment tracking
+
+  vispeech_path: "/path/to/ViSpeech"
+
+  vimd_path: "/path/to/vimd-dataset"## Project Structure
+
+
+
+training:- Support multiple audio formats: WAV, MP3, FLAC, OGG, M4A
+
+  epochs: 10
+
+  batch_size: 8## Installation
+
+  learning_rate: 1e-5
+
+``````bash
+
+```
+
+## Project Structure
+
 Profiling_gender_dialect/
 
-├── src/
+```
 
-│   ├── __init__.py## Installation```bash
+├── finetune.py          # Training script├── src/
 
-│   ├── models.py              # Model architecture (multi-encoder support)
+├── eval.py              # Evaluation script  
 
-│   └── utils.py               # Utility functions# Clone repository
+├── infer.py             # Inference script│   ├── __init__.py## Installation```bash
 
 ├── configs/
 
-│   ├── finetune.yaml          # Training config```bashgit clone https://github.com/VuThanhLam124/Profiling_gender_dialect.git
+│   ├── finetune.yaml    # Training config│   ├── models.py              # Model architecture (multi-encoder support)
 
-│   ├── eval.yaml              # Evaluation config
+│   ├── eval.yaml        # Evaluation config
 
-│   └── infer.yaml             # Inference config# Clone repositorycd Profiling_gender_dialect
+│   └── infer.yaml       # Inference config│   └── utils.py               # Utility functions# Clone repository
 
-├── notebooks/
+└── src/
+
+    ├── models.py        # Model architecture├── configs/
+
+    └── utils.py         # Utilities
+
+```│   ├── finetune.yaml          # Training config```bashgit clone https://github.com/VuThanhLam124/Profiling_gender_dialect.git
+
+
+
+## Features│   ├── eval.yaml              # Evaluation config
+
+
+
+- **Encoders**: WavLM, HuBERT, Wav2Vec2, Whisper│   └── infer.yaml             # Inference config# Clone repositorycd Profiling_gender_dialect
+
+- **Tasks**: Gender (Male/Female), Dialect (North/Central/South)
+
+- **Extras**: Data augmentation, MLflow tracking, Gradio web UI├── notebooks/
+
 
 │   └── speaker-profiling.ipynb  # Kaggle notebookgit clone https://github.com/VuThanhLam124/Profiling_gender_dialect.git
 
