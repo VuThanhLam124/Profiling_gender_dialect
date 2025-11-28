@@ -1,16 +1,33 @@
 """
 Feature Extraction Script for Speaker Profiling
 
-Extract and cache WavLM features from audio datasets.
-Run once, reuse for multiple training experiments.
+Extract WavLM features from audio datasets and save to organized folders.
+Each dataset has its own folder for easy switching during experiments.
+
+Directory Structure:
+    datasets/
+    ├── ViSpeech/
+    │   ├── train/
+    │   │   ├── features/     # .npy feature files
+    │   │   └── metadata.csv  # labels and file mapping
+    │   ├── clean_test/
+    │   └── noisy_test/
+    ├── ViMD/
+    │   └── ...
+    └── CommonVoice/
+        └── ...
 
 Supported datasets:
 - ViSpeech: Vietnamese speech dataset
 - (Extend by adding new dataset classes)
 
 Usage:
-    python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir features/vispeech
-    python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir features/vispeech --split train
+    # Extract ViSpeech train set
+    python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir datasets/ViSpeech/train --split train
+    
+    # Extract ViSpeech test sets
+    python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir datasets/ViSpeech/clean_test --split clean_test
+    python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir datasets/ViSpeech/noisy_test --split noisy_test
 """
 
 import os
@@ -130,10 +147,17 @@ class ViSpeechDataset(BaseDataset):
             ├── trainset.csv
             ├── clean_testset.csv
             └── noisy_testset.csv
+    
+    Splits:
+        - train: Training portion of trainset (after val_split)
+        - val: Validation portion of trainset (val_split ratio)
+        - clean_test: Clean test set
+        - noisy_test: Noisy test set
     """
     
     SPLIT_MAPPING = {
         'train': ('train_meta', 'train_audio'),
+        'val': ('train_meta', 'train_audio'),  # Same source, split by speaker
         'clean_test': ('clean_test_meta', 'clean_test_audio'),
         'noisy_test': ('noisy_test_meta', 'noisy_test_audio'),
     }
@@ -141,28 +165,59 @@ class ViSpeechDataset(BaseDataset):
     def __init__(self, config: Dict, split: str = 'train'):
         super().__init__(config, split)
         
-        if split not in self.SPLIT_MAPPING and split not in ['val', 'test']:
+        if split not in self.SPLIT_MAPPING:
             raise ValueError(f"Invalid split: {split}. Must be one of {list(self.SPLIT_MAPPING.keys())}")
         
-        # For train split, we use train_meta and train_audio
-        # val/test can be derived from train with speaker-based split
-        if split in ['train', 'val', 'test']:
-            self.meta_key, self.audio_key = 'train_meta', 'train_audio'
-        else:
-            self.meta_key, self.audio_key = self.SPLIT_MAPPING[split]
-        
+        self.meta_key, self.audio_key = self.SPLIT_MAPPING[split]
         self.metadata_path = Path(config['data'][self.meta_key])
         self.audio_dir = Path(config['data'][self.audio_key])
+        self.val_split = config['data'].get('val_split', 0.15)
         
         self.logger.info(f"ViSpeech dataset - Split: {split}")
         self.logger.info(f"  Metadata: {self.metadata_path}")
         self.logger.info(f"  Audio dir: {self.audio_dir}")
+        if split in ['train', 'val']:
+            self.logger.info(f"  Val split ratio: {self.val_split}")
     
     def get_metadata(self) -> pd.DataFrame:
-        """Load ViSpeech metadata"""
+        """Load ViSpeech metadata with train/val split"""
         df = pd.read_csv(self.metadata_path)
-        self.logger.info(f"Loaded {len(df)} samples from {self.metadata_path}")
+        self.logger.info(f"Loaded {len(df)} total samples from {self.metadata_path}")
+        
+        # For train/val splits, perform speaker-based splitting
+        if self.split in ['train', 'val']:
+            df = self._split_by_speaker(df)
+        
         return df
+    
+    def _split_by_speaker(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Split data by speaker to avoid data leakage.
+        Ensures same speaker doesn't appear in both train and val.
+        """
+        from sklearn.model_selection import train_test_split
+        
+        # Get unique speakers
+        speakers = df['speaker'].unique()
+        self.logger.info(f"Total speakers: {len(speakers)}")
+        
+        # Split speakers
+        train_speakers, val_speakers = train_test_split(
+            speakers,
+            test_size=self.val_split,
+            random_state=42  # Fixed seed for reproducibility
+        )
+        
+        self.logger.info(f"Train speakers: {len(train_speakers)}, Val speakers: {len(val_speakers)}")
+        
+        # Filter dataframe based on split
+        if self.split == 'train':
+            df = df[df['speaker'].isin(train_speakers)]
+        else:  # val
+            df = df[df['speaker'].isin(val_speakers)]
+        
+        self.logger.info(f"After split - {self.split}: {len(df)} samples")
+        return df.reset_index(drop=True)
     
     def get_audio_path(self, audio_name: str) -> Path:
         """Get audio path for ViSpeech"""
@@ -413,10 +468,10 @@ def main():
     logger.info("=" * 60)
     logger.info("Feature extraction completed!")
     logger.info("=" * 60)
-    logger.info(f"\nTo use cached features in training, update config:")
+    logger.info(f"\nTo use extracted features in training, update config:")
     logger.info(f"  data:")
-    logger.info(f"    use_cached_features: true")
-    logger.info(f"    feature_dir: \"{args.output_dir}\"")
+    logger.info(f"    train_dir: \"{args.output_dir}\"  # for training set")
+    logger.info(f"    val_dir: \"path/to/val/dir\"       # for validation set")
 
 
 if __name__ == "__main__":

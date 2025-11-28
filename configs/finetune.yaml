@@ -1,31 +1,22 @@
-# Finetune Configuration
-# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
-
-# Model
+# Model (for classification heads only - features are pre-extracted)
 model:
-  name: "microsoft/wavlm-base-plus"
+  name: "microsoft/wavlm-base-plus"  # Used for hidden_size reference
   num_genders: 2
   num_dialects: 3
-  freeze_encoder: false
   dropout: 0.1
   head_hidden_dim: 256
-
-# Audio Processing
-audio:
-  sampling_rate: 16000
-  max_duration: 5
 
 # Training
 training:
   batch_size: 32
   learning_rate: 5e-5
-  num_epochs: 1
+  num_epochs: 15
   warmup_ratio: 0.125
   weight_decay: 0.0125
   gradient_clip: 1.0
   lr_scheduler: "linear"
   fp16: true
-  dataloader_num_workers: 2
+  dataloader_num_workers: 4
 
 # Loss
 loss:
@@ -34,44 +25,37 @@ loss:
 # MLflow Configuration
 mlflow:
   enabled: true
-  tracking_uri: "mlruns"  # Local folder or MLflow server URI (e.g., "http://localhost:5000")
+  tracking_uri: "mlruns"
   experiment_name: "speaker-profiling"
-  run_name: null  # Auto-generated if null
-  registered_model_name: null  # Set to register model in MLflow Model Registry
+  run_name: null
+  registered_model_name: null
 
-# Data Augmentation
-augmentation:
-  enabled: true
-  probability: 0.8
-  gaussian_noise:
-    min_amplitude: 0.001
-    max_amplitude: 0.015
-    probability: 0.5
-  time_stretch:
-    min_rate: 0.8
-    max_rate: 1.2
-    probability: 0.5
-  pitch_shift:
-    min_semitones: -4
-    max_semitones: 4
-    probability: 0.5
-  shift:
-    min_shift: -0.5
-    max_shift: 0.5
-    probability: 0.3
-  gain:
-    min_gain_db: -12
-    max_gain_db: 12
-    probability: 0.5
-
-# Data Paths (relative to repo root)
+# Dataset paths - point to folders created by prepare_data.py
+# Structure: datasets/{DatasetName}/{split}/
+#   ├── features/     # .npy files
+#   └── metadata.csv  # labels
 data:
-  train_meta: "/home/ubuntu/DataScience/Voice_Pro_filling/ViSpeech/metadata/trainset.csv"
-  train_audio: "/home/ubuntu/DataScience/Voice_Pro_filling/ViSpeech/trainset"
+  # === RAW DATASET PATHS (for prepare_data.py) ===
+  # Root directory of ViSpeech dataset
+  vispeech_root: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech"
+  
+  # Training set
+  train_meta: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/metadata/trainset.csv"
+  train_audio: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/trainset"
+  
+  # Test sets
+  clean_test_meta: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/metadata/clean_testset.csv"
+  clean_test_audio: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/clean_testset"
+  noisy_test_meta: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/metadata/noisy_testset.csv"
+  noisy_test_audio: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech/noisy_testset"
+  
+  # Validation split ratio (from trainset)
   val_split: 0.15
-  # Cached features (set use_cached_features: true to enable)
-  use_cached_features: false
-  feature_dir: "features/vispeech"  # Output from prepare_data.py
+  
+  # === EXTRACTED FEATURES PATHS (for finetune.py) ===
+  # After running prepare_data.py, features will be saved here
+  train_dir: "datasets/ViSpeech/train"
+  val_dir: "datasets/ViSpeech/val"
 
 # Output
 output:
@@ -84,7 +68,7 @@ early_stopping:
   patience: 3
   threshold: 0.0025
 
-# Label Mappings
+# Label Mappings (must match prepare_data.py)
 labels:
   gender:
     Male: 0

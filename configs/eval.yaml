@@ -19,10 +19,10 @@ evaluation:
 
 # Data Paths (relative to repo root)
 data:
-  clean_test_meta: "ViSpeech/metadata/clean_testset.csv"
-  clean_test_audio: "ViSpeech/clean_testset"
-  noisy_test_meta: "ViSpeech/metadata/noisy_testset.csv"
-  noisy_test_audio: "ViSpeech/noisy_testset"
+  clean_test_meta: "/home/ubuntu/DataScience/Voice_Pro_filling/vispeech_data/ViSpeech/metadata/clean_testset.csv"
+  clean_test_audio: "/home/ubuntu/DataScience/Voice_Pro_filling/vispeech_data/ViSpeech/clean_testset"
+  noisy_test_meta: "/home/ubuntu/DataScience/Voice_Pro_filling/vispeech_data/ViSpeech/metadata/noisy_testset.csv"
+  noisy_test_audio: "/home/ubuntu/DataScience/Voice_Pro_filling/vispeech_data/ViSpeech/noisy_testset"
 
 # Output
 output:

@@ -1,20 +1,16 @@
 # Finetune Configuration
 # Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
+# Uses pre-extracted features from prepare_data.py
 # Copy this file to finetune.yaml and update paths
 
-# Model
+# Model (for classification heads only - features are pre-extracted)
 model:
-  name: "microsoft/wavlm-base-plus"
+  name: "microsoft/wavlm-base-plus"  # Used for hidden_size reference
+  hidden_size: 768                   # WavLM base hidden dimension
   num_genders: 2
   num_dialects: 3
-  freeze_encoder: false
   dropout: 0.1
   head_hidden_dim: 256
-
-# Audio Processing
-audio:
-  sampling_rate: 16000
-  max_duration: 5
 
 # Training
 training:
@@ -26,7 +22,7 @@ training:
   gradient_clip: 1.0
   lr_scheduler: "linear"
   fp16: true
-  dataloader_num_workers: 2
+  dataloader_num_workers: 4
 
 # Loss
 loss:
@@ -35,44 +31,41 @@ loss:
 # MLflow Configuration
 mlflow:
   enabled: true
-  tracking_uri: "mlruns"  # Local folder or MLflow server URI (e.g., "http://localhost:5000")
+  tracking_uri: "mlruns"
   experiment_name: "speaker-profiling"
-  run_name: null  # Auto-generated if null
-  registered_model_name: null  # Set to register model in MLflow Model Registry
+  run_name: null
+  registered_model_name: null
 
-# Data Augmentation
-augmentation:
-  enabled: true
-  probability: 0.8
-  gaussian_noise:
-    min_amplitude: 0.001
-    max_amplitude: 0.015
-    probability: 0.5
-  time_stretch:
-    min_rate: 0.8
-    max_rate: 1.2
-    probability: 0.5
-  pitch_shift:
-    min_semitones: -4
-    max_semitones: 4
-    probability: 0.5
-  shift:
-    min_shift: -0.5
-    max_shift: 0.5
-    probability: 0.3
-  gain:
-    min_gain_db: -12
-    max_gain_db: 12
-    probability: 0.5
-
-# Data Paths (UPDATE THESE PATHS)
+# Dataset paths
+# ============================================================
+# STEP 1: Update RAW DATASET PATHS to your local ViSpeech location
+# STEP 2: Run prepare_data.py to extract features
+# STEP 3: Features will be saved to train_dir/val_dir folders
+# ============================================================
 data:
-  train_meta: "path/to/metadata/trainset.csv"
-  train_audio: "path/to/trainset"
+  # === RAW DATASET PATHS (for prepare_data.py) ===
+  # Download ViSpeech: https://drive.google.com/file/d/1-BbOHf42o6eBje2WqQiiRKMtNxmZiRf9
+  # Update these paths to match your local dataset location
+  vispeech_root: "/path/to/ViSpeech"  # <-- UPDATE THIS
+  
+  # Training data
+  train_meta: "/path/to/ViSpeech/metadata/trainset.csv"      # <-- UPDATE
+  train_audio: "/path/to/ViSpeech/trainset"                   # <-- UPDATE
+  
+  # Test data
+  clean_test_meta: "/path/to/ViSpeech/metadata/clean_testset.csv"
+  clean_test_audio: "/path/to/ViSpeech/clean_testset"
+  noisy_test_meta: "/path/to/ViSpeech/metadata/noisy_testset.csv"
+  noisy_test_audio: "/path/to/ViSpeech/noisy_testset"
+  
+  # Validation split ratio (extracted from trainset)
   val_split: 0.15
-  # Cached features - run prepare_data.py first, then enable
-  use_cached_features: false
-  feature_dir: "features/vispeech"  # Output directory from prepare_data.py
+  
+  # === EXTRACTED FEATURES PATHS (for finetune.py) ===
+  # After running prepare_data.py, features will be saved here
+  # These paths are relative to project root
+  train_dir: "datasets/ViSpeech/train"
+  val_dir: "datasets/ViSpeech/val"
 
 # Output
 output:
@@ -85,7 +78,7 @@ early_stopping:
   patience: 3
   threshold: 0.0025
 
-# Label Mappings
+# Label Mappings (must match prepare_data.py)
 labels:
   gender:
     Male: 0

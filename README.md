@@ -67,54 +67,99 @@ Metadata CSV columns: `audio_name`, `speaker`, `gender` (Male/Female), `dialect`
 
 ## Usage
 
-### 1. Feature Extraction (Optional)
+### Workflow Overview
 
-The `prepare_data.py` script extracts and caches WavLM features from audio files. Benefits:
-- **Run once, reuse many times**: Extract features once, then run multiple training experiments with different hyperparameters
-- **Faster iteration**: Skip audio loading and WavLM forward pass during training
-- **Extensible**: Add new datasets by creating a new class (e.g., for HuggingFace datasets)
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  1. Feature Extraction (run once per dataset)                       │
+│     python prepare_data.py --dataset vispeech --split train         │
+│                  ↓                                                   │
+│     datasets/ViSpeech/train/                                        │
+│     ├── features/*.npy                                              │
+│     └── metadata.csv                                                │
+└─────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│  2. Training (run many times with different configs)                │
+│     python finetune.py --config configs/finetune.yaml               │
+│                  ↓                                                   │
+│     output/speaker-profiling/best_model/                            │
+└─────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│  3. Evaluation / Inference                                          │
+│     python eval.py --config configs/eval.yaml                       │
+│     python infer.py --audio path/to/audio.wav                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 1. Feature Extraction (Required)
+
+Extract WavLM features and save to dataset-specific folders. **Run once, reuse many times** for experiments with different hyperparameters.
 
 ```bash
-# Extract features from ViSpeech trainset
-python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir features/vispeech --split train
+# Extract features for training set
+python prepare_data.py --dataset vispeech \
+    --split train \
+    --output_dir datasets/ViSpeech/train
 
-# Extract features from test sets
-python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir features/vispeech_clean_test --split clean_test
-python prepare_data.py --dataset vispeech --config configs/finetune.yaml --output_dir features/vispeech_noisy_test --split noisy_test
+# Extract features for validation set
+python prepare_data.py --dataset vispeech \
+    --split val \
+    --output_dir datasets/ViSpeech/val
+
+# Extract features for test sets
+python prepare_data.py --dataset vispeech \
+    --split clean_test \
+    --output_dir datasets/ViSpeech/clean_test
+
+python prepare_data.py --dataset vispeech \
+    --split noisy_test \
+    --output_dir datasets/ViSpeech/noisy_test
 ```
 
-Output structure:
+**Output structure:**
 ```
-features/vispeech/
-├── features/           # Cached .npy files
-│   ├── audio001.npy
+datasets/ViSpeech/train/
+├── features/           # Pre-extracted WavLM hidden states
+│   ├── audio001.npy    # Shape: [T, 768]
+│   ├── audio002.npy
 │   └── ...
-├── metadata.csv        # Updated metadata with feature paths
-└── stats.json          # Extraction statistics
+└── metadata.csv        # Labels: audio_name, gender, dialect, gender_label, dialect_label, feature_name
 ```
 
-To use cached features, update `configs/finetune.yaml`:
-```yaml
-data:
-  use_cached_features: true
-  feature_dir: "features/vispeech"
-```
+**Benefits:**
+- Skip WavLM forward pass during training → faster experiments
+- Easily switch datasets by changing paths in config
+- Support multiple datasets: `datasets/ViSpeech/`, `datasets/ViMD/`, etc.
 
 ### 2. Training
 
-Edit data paths in `configs/finetune.yaml`:
+Copy config template and edit paths:
+
+```bash
+cp configs/finetune.yaml.example configs/finetune.yaml
+```
+
+Edit `configs/finetune.yaml`:
 
 ```yaml
 data:
-  train_meta: "ViSpeech/metadata/trainset.csv"
-  train_audio: "ViSpeech/trainset"
-  val_split: 0.15
+  train_dir: "datasets/ViSpeech/train"  # Contains features/ and metadata.csv
+  val_dir: "datasets/ViSpeech/val"
 ```
 
-Run training:
+Run training with MLflow tracking:
 
 ```bash
 python finetune.py --config configs/finetune.yaml
+```
+
+View experiments in MLflow UI:
+
+```bash
+mlflow ui --port 5000
+# Open http://localhost:5000
 ```
 
 ### 3. Evaluation
@@ -208,24 +253,30 @@ Gender Head    Dialect Head
 Key parameters in config files:
 
 ```yaml
-# Model
+# Model (classification heads only for training)
 model:
-  name: "microsoft/wavlm-base-plus"
+  name: "microsoft/wavlm-base-plus"  # For reference
+  hidden_size: 768                   # WavLM hidden dimension
   dropout: 0.1
   head_hidden_dim: 256
-  freeze_encoder: false
-
-# Audio
-audio:
-  sampling_rate: 16000
-  max_duration: 10.0
 
 # Training
 training:
-  batch_size: 8
-  learning_rate: 1e-5
-  num_epochs: 10
-  weight_decay: 0.01
+  batch_size: 32
+  learning_rate: 5e-5
+  num_epochs: 15
+  weight_decay: 0.0125
+
+# Dataset paths (point to extracted features)
+data:
+  train_dir: "datasets/ViSpeech/train"
+  val_dir: "datasets/ViSpeech/val"
+
+# MLflow tracking
+mlflow:
+  enabled: true
+  tracking_uri: "mlruns"
+  experiment_name: "speaker-profiling"
 
 # Loss
 loss:

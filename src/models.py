@@ -212,7 +212,9 @@ class MultiTaskSpeakerModel(nn.Module):
 
 class MultiTaskSpeakerModelFromConfig(MultiTaskSpeakerModel):
     """
-    Multi-task model initialized from OmegaConf config
+    Multi-task model initialized from OmegaConf config (includes WavLM encoder)
+    
+    Use this for inference with raw audio input.
     
     Usage:
         config = OmegaConf.load('configs/finetune.yaml')
@@ -234,5 +236,132 @@ class MultiTaskSpeakerModelFromConfig(MultiTaskSpeakerModel):
         
         logger.info("Architecture: WavLM + Attentive Pooling + LayerNorm")
         logger.info(f"Hidden size: {self.wavlm.config.hidden_size}")
+        logger.info(f"Head hidden dim: {model_config.get('head_hidden_dim', 256)}")
+        logger.info(f"Dropout: {model_config.get('dropout', 0.1)}")
+
+
+class ClassificationHeadModel(nn.Module):
+    """
+    Lightweight model with only classification heads (no WavLM encoder).
+    
+    Use this for training with pre-extracted features to save memory.
+    WavLM hidden_size is typically 768.
+    
+    Usage:
+        model = ClassificationHeadModel(config)
+        output = model(input_features=features, gender_labels=y_gender, dialect_labels=y_dialect)
+    """
+    
+    def __init__(
+        self, 
+        hidden_size: int = 768,
+        num_genders: int = 2, 
+        num_dialects: int = 3, 
+        dropout: float = 0.1, 
+        head_hidden_dim: int = 256,
+        dialect_loss_weight: float = 3.0
+    ):
+        super().__init__()
+        
+        self.hidden_size = hidden_size
+        self.dialect_loss_weight = dialect_loss_weight
+        
+        # Pooling and normalization
+        self.attentive_pooling = AttentivePooling(hidden_size)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(dropout)
+        
+        # Gender classification head (2 layers)
+        self.gender_head = nn.Sequential(
+            nn.Linear(hidden_size, head_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(head_hidden_dim, num_genders)
+        )
+        
+        # Dialect classification head (3 layers - deeper for harder task)
+        self.dialect_head = nn.Sequential(
+            nn.Linear(hidden_size, head_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(head_hidden_dim, head_hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(head_hidden_dim // 2, num_dialects)
+        )
+        
+        logger.info(f"ClassificationHeadModel initialized (hidden_size={hidden_size})")
+    
+    def forward(
+        self, 
+        input_features: torch.Tensor,
+        attention_mask: torch.Tensor = None,
+        gender_labels: torch.Tensor = None, 
+        dialect_labels: torch.Tensor = None
+    ):
+        """
+        Forward pass for pre-extracted features
+        
+        Args:
+            input_features: Pre-extracted WavLM features [B, T, H]
+            attention_mask: Attention mask [B, T]
+            gender_labels: Gender labels [B] (optional, for training)
+            dialect_labels: Dialect labels [B] (optional, for training)
+        
+        Returns:
+            dict with keys:
+                - loss: Combined loss (if labels provided)
+                - gender_logits: Gender predictions [B, num_genders]
+                - dialect_logits: Dialect predictions [B, num_dialects]
+                - attention_weights: Attention weights from pooling [B, T]
+        """
+        # Attentive pooling
+        pooled, attn_weights = self.attentive_pooling(input_features, attention_mask)
+        
+        # Normalization and dropout
+        pooled = self.layer_norm(pooled)
+        pooled = self.dropout(pooled)
+        
+        # Classification heads
+        gender_logits = self.gender_head(pooled)
+        dialect_logits = self.dialect_head(pooled)
+        
+        # Compute loss if labels provided
+        loss = None
+        if gender_labels is not None and dialect_labels is not None:
+            loss_fct = nn.CrossEntropyLoss()
+            gender_loss = loss_fct(gender_logits, gender_labels)
+            dialect_loss = loss_fct(dialect_logits, dialect_labels)
+            loss = gender_loss + self.dialect_loss_weight * dialect_loss
+        
+        return {
+            'loss': loss,
+            'gender_logits': gender_logits,
+            'dialect_logits': dialect_logits,
+            'attention_weights': attn_weights
+        }
+
+
+class ClassificationHeadModelFromConfig(ClassificationHeadModel):
+    """
+    Lightweight classification model initialized from OmegaConf config.
+    
+    Use this for training with pre-extracted features.
+    """
+    
+    def __init__(self, config):
+        model_config = config['model']
+        
+        super().__init__(
+            hidden_size=model_config.get('hidden_size', 768),  # WavLM base hidden size
+            num_genders=model_config.get('num_genders', 2),
+            num_dialects=model_config.get('num_dialects', 3),
+            dropout=model_config.get('dropout', 0.1),
+            head_hidden_dim=model_config.get('head_hidden_dim', 256),
+            dialect_loss_weight=config.get('loss', {}).get('dialect_weight', 3.0)
+        )
+        
+        logger.info("Architecture: Attentive Pooling + LayerNorm + Classification Heads")
+        logger.info(f"Hidden size: {self.hidden_size}")
         logger.info(f"Head hidden dim: {model_config.get('head_hidden_dim', 256)}")
         logger.info(f"Dropout: {model_config.get('dropout', 0.1)}")
