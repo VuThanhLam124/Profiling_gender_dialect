@@ -48,10 +48,14 @@ class ECAPATDNNEncoder(nn.Module):
             )
         
         self.model_name = model_name
+        
+        # Detect if CUDA is available
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
         self.encoder = EncoderClassifier.from_hparams(
             source=model_name,
             savedir=f"pretrained_models/{model_name.split('/')[-1]}",
-            run_opts={"device": "cpu"}  # Load on CPU first
+            run_opts={"device": device}
         )
         
         # Force float32 for all encoder parameters
@@ -72,16 +76,8 @@ class ECAPATDNNEncoder(nn.Module):
         
         self.config = Config(self.embedding_size)
         
-        # Store device
-        self._device = None
-    
-    def to(self, device):
-        """Override to method to handle device movement properly"""
-        self._device = device
-        self.encoder.to(device)
-        # Ensure float32 after moving
-        self.encoder.mods.float()
-        return super().to(device)
+        # Track current device
+        self._current_device = device
     
     def forward(self, input_values: torch.Tensor, attention_mask: torch.Tensor = None):
         """
@@ -94,15 +90,17 @@ class ECAPATDNNEncoder(nn.Module):
         Returns:
             Object with last_hidden_state attribute [B, 1, H]
         """
-        # Ensure float32 for SpeechBrain (doesn't support fp16)
-        input_values = input_values.float()
+        # Get device from input
+        device = input_values.device
         
         # Move encoder to same device as input if needed
-        device = input_values.device
-        if self._device != device:
+        if str(device) != str(self._current_device):
             self.encoder.to(device)
-            self.encoder.mods.float()  # Ensure float32
-            self._device = device
+            self.encoder.mods.float()  # Ensure float32 after move
+            self._current_device = device
+        
+        # Ensure input is float32 and on correct device
+        input_values = input_values.float().to(device)
         
         # SpeechBrain expects [B, T] audio at 16kHz
         # encode_batch handles feature extraction internally
