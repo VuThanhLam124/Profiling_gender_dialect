@@ -689,6 +689,7 @@ def main(config_path):
         report_to='none',
         remove_unused_columns=False,
         seed=config['seed'],
+        dataloader_drop_last=is_ecapa,  # Drop last incomplete batch for ECAPA (BatchNorm issue)
     )
     
     # Early stopping

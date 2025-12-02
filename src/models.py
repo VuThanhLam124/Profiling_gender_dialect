@@ -105,6 +105,8 @@ class ECAPATDNNEncoder(nn.Module):
         # SpeechBrain expects [B, T] audio at 16kHz
         # encode_batch handles feature extraction internally
         with torch.no_grad():
+            # Set encoder to eval mode to handle BatchNorm properly
+            self.encoder.eval()
             embeddings = self.encoder.encode_batch(input_values)  # [B, 1, H]
         
         # Ensure output is float32
