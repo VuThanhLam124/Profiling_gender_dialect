@@ -454,7 +454,16 @@ def main():
     
     # Load feature extractor
     model_name = config.get('model', {}).get('name', 'microsoft/wavlm-base-plus')
-    feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
+    
+    # Check if model is ECAPA-TDNN (SpeechBrain)
+    is_ecapa = 'ecapa' in model_name.lower() or 'speechbrain' in model_name.lower()
+    
+    if is_ecapa:
+        # ECAPA-TDNN: use Wav2Vec2 feature extractor for audio normalization
+        feature_extractor = AutoFeatureExtractor.from_pretrained("facebook/wav2vec2-base")
+        logger.info("Using Wav2Vec2 feature extractor for ECAPA-TDNN")
+    else:
+        feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
     
     # Load model
     logger.info("")

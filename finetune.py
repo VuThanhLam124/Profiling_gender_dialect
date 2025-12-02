@@ -596,7 +596,17 @@ def main(config_path):
     # Load feature extractor (auto-detect based on model type)
     model_name = config['model']['name']
     logger.info(f"Loading feature extractor for {model_name}...")
-    feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
+    
+    # Check if model is ECAPA-TDNN (SpeechBrain) - no HuggingFace feature extractor
+    is_ecapa = 'ecapa' in model_name.lower() or 'speechbrain' in model_name.lower()
+    
+    if is_ecapa:
+        # ECAPA-TDNN uses simple audio processing, use Wav2Vec2 feature extractor
+        # which just normalizes audio to 16kHz
+        feature_extractor = AutoFeatureExtractor.from_pretrained("facebook/wav2vec2-base")
+        logger.info("Using Wav2Vec2 feature extractor for ECAPA-TDNN (audio normalization only)")
+    else:
+        feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
     
     # Load data based on source
     if data_source == 'vimd':
