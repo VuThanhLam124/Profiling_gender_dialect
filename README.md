@@ -32,3 +32,24 @@ python infer.py --config configs/infer.yaml --audio path/to/audio.wav
 ### In Kaggle:
 - https://www.kaggle.com/datasets/thanhlamdev/vimd-dataset
 - https://www.kaggle.com/datasets/thanhlamdev/vispeech
+
+### Architecture:
+        Audio -> Encoder (WavLM/HuBERT/Wav2Vec2/Whisper) -> Last Hidden [B,T,H]
+                              |
+                     Attentive Pooling [B,H]
+                              |
+                     Layer Normalization
+                              |
+                         Dropout(0.1)
+                              |
+              +---------------+---------------+
+              |                               |
+        Gender Head (2 layers)     Dialect Head (3 layers)
+              |                               |
+            [B,2]                           [B,3]
+    
+    Supported encoders:
+        - WavLM: microsoft/wavlm-base-plus, microsoft/wavlm-large
+        - HuBERT: facebook/hubert-base-ls960, facebook/hubert-large-ls960-ft
+        - Wav2Vec2: facebook/wav2vec2-base, facebook/wav2vec2-large-960h
+        - Whisper: openai/whisper-base, openai/whisper-small, openai/whisper-medium
