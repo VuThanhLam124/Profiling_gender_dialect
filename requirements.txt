@@ -15,3 +15,4 @@ tqdm>=4.65.0
 wandb>=0.16.0
 datasets==2.21.0
 safetensors
+speechbrain>=1.0.0

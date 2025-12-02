@@ -1,6 +1,6 @@
 """
 Model Architecture for Speaker Profiling
-Supports multiple encoders: WavLM, HuBERT, Wav2Vec2, Whisper
+Supports multiple encoders: WavLM, HuBERT, Wav2Vec2, Whisper, ECAPA-TDNN
 Architecture: Encoder + Attentive Pooling + LayerNorm + Classification Heads
 """
 
@@ -16,7 +16,78 @@ from transformers import (
     AutoConfig
 )
 
+# SpeechBrain ECAPA-TDNN support
+try:
+    from speechbrain.inference.speaker import EncoderClassifier
+    SPEECHBRAIN_AVAILABLE = True
+except ImportError:
+    SPEECHBRAIN_AVAILABLE = False
+
 logger = logging.getLogger("speaker_profiling")
+
+
+# ECAPA-TDNN wrapper class for consistent interface
+class ECAPATDNNEncoder(nn.Module):
+    """
+    Wrapper for SpeechBrain ECAPA-TDNN encoder.
+    
+    ECAPA-TDNN outputs fixed-size embeddings (192 or 512 dim) instead of 
+    frame-level features like WavLM/HuBERT. This wrapper handles the difference.
+    
+    Supported models:
+        - speechbrain/spkrec-ecapa-voxceleb: 192-dim embeddings
+        - speechbrain/spkrec-xvect-voxceleb: 512-dim embeddings (x-vector)
+    """
+    
+    def __init__(self, model_name: str = "speechbrain/spkrec-ecapa-voxceleb"):
+        super().__init__()
+        if not SPEECHBRAIN_AVAILABLE:
+            raise ImportError(
+                "SpeechBrain is required for ECAPA-TDNN. "
+                "Install with: pip install speechbrain"
+            )
+        
+        self.model_name = model_name
+        self.encoder = EncoderClassifier.from_hparams(
+            source=model_name,
+            savedir=f"pretrained_models/{model_name.split('/')[-1]}"
+        )
+        
+        # Determine embedding size
+        if "ecapa" in model_name.lower():
+            self.embedding_size = 192
+        elif "xvect" in model_name.lower():
+            self.embedding_size = 512
+        else:
+            self.embedding_size = 192  # default
+        
+        # Config-like object for compatibility
+        class Config:
+            def __init__(self, hidden_size):
+                self.hidden_size = hidden_size
+        
+        self.config = Config(self.embedding_size)
+    
+    def forward(self, input_values: torch.Tensor, attention_mask: torch.Tensor = None):
+        """
+        Extract embeddings from audio.
+        
+        Args:
+            input_values: Audio waveform [B, T]
+            attention_mask: Not used for ECAPA-TDNN
+        
+        Returns:
+            Object with last_hidden_state attribute [B, 1, H]
+        """
+        # ECAPA-TDNN expects [B, T] audio at 16kHz
+        embeddings = self.encoder.encode_batch(input_values)  # [B, 1, H]
+        
+        # Return object compatible with HuggingFace models
+        class Output:
+            def __init__(self, hidden_state):
+                self.last_hidden_state = hidden_state
+        
+        return Output(embeddings)
 
 
 # Encoder registry - maps model type to class and hidden size
@@ -46,6 +117,18 @@ ENCODER_REGISTRY = {
     "openai/whisper-large": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
     "openai/whisper-large-v2": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
     "openai/whisper-large-v3": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
+    
+    # ECAPA-TDNN (SpeechBrain)
+    "speechbrain/spkrec-ecapa-voxceleb": {
+        "class": ECAPATDNNEncoder, 
+        "hidden_size": 192, 
+        "is_ecapa": True
+    },
+    "speechbrain/spkrec-xvect-voxceleb": {
+        "class": ECAPATDNNEncoder, 
+        "hidden_size": 512, 
+        "is_ecapa": True
+    },
 }
 
 
@@ -53,6 +136,16 @@ def get_encoder_info(model_name: str) -> dict:
     """Get encoder class and hidden size for a model name"""
     if model_name in ENCODER_REGISTRY:
         return ENCODER_REGISTRY[model_name]
+    
+    # Check for ECAPA-TDNN / SpeechBrain models
+    if 'ecapa' in model_name.lower() or 'speechbrain' in model_name.lower():
+        if not SPEECHBRAIN_AVAILABLE:
+            raise ImportError(
+                "SpeechBrain is required for ECAPA-TDNN. "
+                "Install with: pip install speechbrain"
+            )
+        hidden_size = 512 if 'xvect' in model_name.lower() else 192
+        return {"class": ECAPATDNNEncoder, "hidden_size": hidden_size, "is_ecapa": True}
     
     # Try to auto-detect from config
     try:
@@ -118,9 +211,9 @@ class MultiTaskSpeakerModel(nn.Module):
     Multi-task model for gender and dialect classification
     
     Architecture:
-        Audio -> Encoder (WavLM/HuBERT/Wav2Vec2/Whisper) -> Last Hidden [B,T,H]
+        Audio -> Encoder (WavLM/HuBERT/Wav2Vec2/Whisper/ECAPA-TDNN) -> Last Hidden [B,T,H]
                               |
-                     Attentive Pooling [B,H]
+                     Attentive Pooling [B,H] (skipped for ECAPA-TDNN)
                               |
                      Layer Normalization
                               |
@@ -137,6 +230,7 @@ class MultiTaskSpeakerModel(nn.Module):
         - HuBERT: facebook/hubert-base-ls960, facebook/hubert-large-ls960-ft
         - Wav2Vec2: facebook/wav2vec2-base, facebook/wav2vec2-large-960h
         - Whisper: openai/whisper-base, openai/whisper-small, openai/whisper-medium
+        - ECAPA-TDNN: speechbrain/spkrec-ecapa-voxceleb (192-dim embeddings)
     
     Args:
         model_name: Pretrained encoder model name or path
@@ -167,12 +261,18 @@ class MultiTaskSpeakerModel(nn.Module):
         encoder_info = get_encoder_info(model_name)
         encoder_class = encoder_info["class"]
         self.is_whisper = encoder_info.get("is_whisper", False)
+        self.is_ecapa = encoder_info.get("is_ecapa", False)
         
         logger.info(f"Loading encoder: {model_name}")
         logger.info(f"Encoder class: {encoder_class.__name__}")
         
         # Load pretrained encoder
-        self.encoder = encoder_class.from_pretrained(model_name)
+        if self.is_ecapa:
+            # ECAPA-TDNN uses different loading mechanism
+            self.encoder = encoder_class(model_name)
+        else:
+            self.encoder = encoder_class.from_pretrained(model_name)
+        
         hidden_size = self.encoder.config.hidden_size
         self.hidden_size = hidden_size
         
@@ -184,7 +284,7 @@ class MultiTaskSpeakerModel(nn.Module):
                 param.requires_grad = False
             logger.info("Encoder weights frozen")
         
-        # Pooling and normalization
+        # Pooling and normalization (ECAPA-TDNN already outputs pooled embeddings)
         self.attentive_pooling = AttentivePooling(hidden_size)
         self.layer_norm = nn.LayerNorm(hidden_size)
         self.dropout = nn.Dropout(dropout)
@@ -221,7 +321,7 @@ class MultiTaskSpeakerModel(nn.Module):
         
         Args:
             input_values: Audio waveform [B, T] (for raw audio mode)
-            input_features: Pre-extracted features [B, T, H] (for cached mode)
+            input_features: Pre-extracted features [B, T, H] or [B, 1, H] for ECAPA
             attention_mask: Attention mask [B, T]
             gender_labels: Gender labels [B] (optional, for training)
             dialect_labels: Dialect labels [B] (optional, for training)
@@ -231,7 +331,7 @@ class MultiTaskSpeakerModel(nn.Module):
                 - loss: Combined loss (if labels provided)
                 - gender_logits: Gender predictions [B, num_genders]
                 - dialect_logits: Dialect predictions [B, num_dialects]
-                - attention_weights: Attention weights from pooling [B, T]
+                - attention_weights: Attention weights from pooling [B, T] (None for ECAPA)
         """
         # Get hidden states from either raw audio or pre-extracted features
         if input_features is not None:
@@ -243,17 +343,23 @@ class MultiTaskSpeakerModel(nn.Module):
         else:
             raise ValueError("Either input_values or input_features must be provided")
         
-        # Create proper attention mask for hidden states (encoder downsamples audio)
-        # Hidden states have different sequence length than input audio
-        if attention_mask is not None and hidden_states.shape[1] != attention_mask.shape[1]:
-            # Create new mask based on hidden states length
-            batch_size, seq_len, _ = hidden_states.shape
-            pooled_mask = torch.ones(batch_size, seq_len, device=hidden_states.device)
+        # Handle ECAPA-TDNN (outputs [B, 1, H] - already pooled embeddings)
+        if self.is_ecapa or hidden_states.shape[1] == 1:
+            # ECAPA-TDNN outputs already pooled embeddings
+            pooled = hidden_states.squeeze(1)  # [B, H]
+            attn_weights = None
         else:
-            pooled_mask = attention_mask
-        
-        # Attentive pooling
-        pooled, attn_weights = self.attentive_pooling(hidden_states, pooled_mask)
+            # Create proper attention mask for hidden states (encoder downsamples audio)
+            # Hidden states have different sequence length than input audio
+            if attention_mask is not None and hidden_states.shape[1] != attention_mask.shape[1]:
+                # Create new mask based on hidden states length
+                batch_size, seq_len, _ = hidden_states.shape
+                pooled_mask = torch.ones(batch_size, seq_len, device=hidden_states.device)
+            else:
+                pooled_mask = attention_mask
+            
+            # Attentive pooling
+            pooled, attn_weights = self.attentive_pooling(hidden_states, pooled_mask)
         
         # Normalization and dropout
         pooled = self.layer_norm(pooled)
@@ -291,9 +397,13 @@ class MultiTaskSpeakerModel(nn.Module):
             attention_mask: Attention mask [B, T]
         
         Returns:
-            hidden_states: Hidden states [B, T, H]
+            hidden_states: Hidden states [B, T, H] or [B, 1, H] for ECAPA-TDNN
         """
-        if self.is_whisper:
+        if self.is_ecapa:
+            # ECAPA-TDNN outputs fixed-size embeddings [B, 1, H]
+            outputs = self.encoder(input_values, attention_mask)
+            hidden_states = outputs.last_hidden_state
+        elif self.is_whisper:
             # Whisper uses encoder-decoder, we only use encoder
             outputs = self.encoder.encoder(input_values)
             hidden_states = outputs.last_hidden_state
@@ -320,7 +430,13 @@ class MultiTaskSpeakerModel(nn.Module):
             embeddings: Speaker embeddings [B, H]
         """
         hidden_states = self._encode(input_values, attention_mask)
-        pooled, _ = self.attentive_pooling(hidden_states, attention_mask)
+        
+        if self.is_ecapa or hidden_states.shape[1] == 1:
+            # ECAPA-TDNN already outputs pooled embeddings
+            pooled = hidden_states.squeeze(1)
+        else:
+            pooled, _ = self.attentive_pooling(hidden_states, attention_mask)
+        
         pooled = self.layer_norm(pooled)
         return pooled
 

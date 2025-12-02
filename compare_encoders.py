@@ -6,6 +6,7 @@ This script trains and evaluates models with different encoders:
 - HuBERT (facebook/hubert-base-ls960)
 - Wav2Vec2 (facebook/wav2vec2-base-960h)
 - Whisper (openai/whisper-small)
+- ECAPA-TDNN (speechbrain/spkrec-ecapa-voxceleb)
 
 Usage:
     python compare_encoders.py --config configs/finetune.yaml --output_dir results/comparison
@@ -51,6 +52,12 @@ ENCODERS = {
         'name': 'openai/whisper-small',
         'hidden_size': 768,
         'description': 'Whisper Small'
+    },
+    'ecapa-tdnn': {
+        'name': 'speechbrain/spkrec-ecapa-voxceleb',
+        'hidden_size': 192,
+        'description': 'ECAPA-TDNN (SpeechBrain)',
+        'is_ecapa': True
     },
 }
 
