@@ -50,7 +50,8 @@ class ECAPATDNNEncoder(nn.Module):
         self.model_name = model_name
         self.encoder = EncoderClassifier.from_hparams(
             source=model_name,
-            savedir=f"pretrained_models/{model_name.split('/')[-1]}"
+            savedir=f"pretrained_models/{model_name.split('/')[-1]}",
+            run_opts={"device": "cpu"}  # Load on CPU first, move to GPU later
         )
         
         # Determine embedding size
@@ -79,8 +80,17 @@ class ECAPATDNNEncoder(nn.Module):
         Returns:
             Object with last_hidden_state attribute [B, 1, H]
         """
-        # ECAPA-TDNN expects [B, T] audio at 16kHz
-        embeddings = self.encoder.encode_batch(input_values)  # [B, 1, H]
+        # Ensure float32 for SpeechBrain (doesn't support fp16)
+        input_values = input_values.float()
+        
+        # Move encoder to same device as input
+        device = input_values.device
+        self.encoder.to(device)
+        
+        # SpeechBrain expects [B, T] audio at 16kHz
+        # encode_batch handles feature extraction internally
+        with torch.no_grad():
+            embeddings = self.encoder.encode_batch(input_values)  # [B, 1, H]
         
         # Return object compatible with HuggingFace models
         class Output:
