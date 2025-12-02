@@ -25,3 +25,10 @@ python infer.py --config configs/infer.yaml --audio path/to/audio.wav
 
 ### Pretrained Models:
 - [WavLM Base+](https://huggingface.co/microsoft/wavlm-base-plus)
+- [Wav2Vec2 Base](https://huggingface.co/facebook/wav2vec2-base)
+- [HuBERT Base](https://huggingface.co/facebook/hubert-base-ls960)
+
+
+### In Kaggle:
+- https://www.kaggle.com/datasets/thanhlamdev/vimd-dataset
+- https://www.kaggle.com/datasets/thanhlamdev/vispeech
