@@ -104,3 +104,6 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# best_model folder
+model/
