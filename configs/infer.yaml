@@ -2,9 +2,9 @@
 
 # Model
 model:
-  checkpoint: "output/speaker-profiling/best_model"
-  name: "microsoft/wavlm-base-plus"
-  head_hidden_dim: 256
+  checkpoint: "model/wav2vec"
+  name: "facebook/wav2vec2-base"
+  head_hidden_dim: 512
 
 # Audio Processing
 audio:
@@ -28,10 +28,12 @@ output:
   format: "json"
 
 # Label Mappings
+# NOTE: Model was trained with Female=0, Male=1 (opposite of finetune.yaml order)
+# This is because pandas .map() may have processed labels in different order
 labels:
   gender:
-    0: "Male"
-    1: "Female"
+    0: "Female"
+    1: "Male"
   dialect:
     0: "North"
     1: "Central"

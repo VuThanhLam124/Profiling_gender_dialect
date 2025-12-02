@@ -16,12 +16,22 @@ from transformers import (
     AutoConfig
 )
 
-# SpeechBrain ECAPA-TDNN support
-try:
-    from speechbrain.inference.speaker import EncoderClassifier
-    SPEECHBRAIN_AVAILABLE = True
-except ImportError:
-    SPEECHBRAIN_AVAILABLE = False
+# SpeechBrain ECAPA-TDNN support - lazy import to avoid torchaudio issues
+SPEECHBRAIN_AVAILABLE = None  # Will be set on first use
+EncoderClassifier = None  # Will be imported lazily
+
+def _check_speechbrain():
+    """Lazily check and import SpeechBrain"""
+    global SPEECHBRAIN_AVAILABLE, EncoderClassifier
+    if SPEECHBRAIN_AVAILABLE is None:
+        try:
+            from speechbrain.inference.speaker import EncoderClassifier as _EncoderClassifier
+            EncoderClassifier = _EncoderClassifier
+            SPEECHBRAIN_AVAILABLE = True
+        except (ImportError, AttributeError) as e:
+            SPEECHBRAIN_AVAILABLE = False
+            logger.warning(f"SpeechBrain not available: {e}")
+    return SPEECHBRAIN_AVAILABLE
 
 logger = logging.getLogger("speaker_profiling")
 
@@ -41,7 +51,9 @@ class ECAPATDNNEncoder(nn.Module):
     
     def __init__(self, model_name: str = "speechbrain/spkrec-ecapa-voxceleb"):
         super().__init__()
-        if not SPEECHBRAIN_AVAILABLE:
+        
+        # Lazy import SpeechBrain
+        if not _check_speechbrain():
             raise ImportError(
                 "SpeechBrain is required for ECAPA-TDNN. "
                 "Install with: pip install speechbrain"
@@ -168,12 +180,9 @@ def get_encoder_info(model_name: str) -> dict:
         return ENCODER_REGISTRY[model_name]
     
     # Check for ECAPA-TDNN / SpeechBrain models
+    # Note: We don't check SPEECHBRAIN_AVAILABLE here - the actual import
+    # will happen lazily in ECAPATDNNEncoder.__init__() when the model is used
     if 'ecapa' in model_name.lower() or 'speechbrain' in model_name.lower():
-        if not SPEECHBRAIN_AVAILABLE:
-            raise ImportError(
-                "SpeechBrain is required for ECAPA-TDNN. "
-                "Install with: pip install speechbrain"
-            )
         hidden_size = 512 if 'xvect' in model_name.lower() else 192
         return {"class": ECAPATDNNEncoder, "hidden_size": hidden_size, "is_ecapa": True}
     

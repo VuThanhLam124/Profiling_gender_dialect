@@ -48,11 +48,20 @@ class SpeakerProfilerApp:
         
         self.logger.info("Loading model...")
         
-        self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-            self.config['model']['checkpoint']
-        )
+        model_name = self.config['model']['name']
+        is_ecapa = 'ecapa' in model_name.lower() or 'speechbrain' in model_name.lower()
         
-        self.model = MultiTaskSpeakerModel(self.config['model']['name'])
+        if is_ecapa:
+            # ECAPA-TDNN: use Wav2Vec2 feature extractor for audio normalization
+            self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+                "facebook/wav2vec2-base"
+            )
+        else:
+            self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+                self.config['model']['checkpoint']
+            )
+        
+        self.model = MultiTaskSpeakerModel(model_name)
         self.model = load_model_checkpoint(
             self.model,
             self.config['model']['checkpoint'],
@@ -152,10 +161,8 @@ class SpeakerProfilerApp:
     def create_interface(self) -> gr.Blocks:
         """Create Gradio interface"""
         
-        with gr.Blocks(
-            title="Vietnamese Speaker Profiling",
-            theme=gr.themes.Soft()
-        ) as demo:
+        # Gradio < 4.0 doesn't support theme in Blocks
+        with gr.Blocks(title="Vietnamese Speaker Profiling") as demo:
             
             gr.Markdown(
                 """
@@ -163,7 +170,7 @@ class SpeakerProfilerApp:
                 
                 Identify gender and dialect from Vietnamese speech audio.
                 
-                **Model:** WavLM + Attentive Pooling + LayerNorm
+                **Model:** Encoder + Attentive Pooling + LayerNorm + MultiHead Classifier
                 
                 **Supported dialects:** North, Central, South
                 """

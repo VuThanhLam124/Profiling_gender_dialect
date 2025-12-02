@@ -18,7 +18,7 @@ training:
   num_epochs: 15
   warmup_ratio: 0.125
   weight_decay: 0.0125
-  gradient_clip: 1.0
+  gradient_clip: 0.5
   lr_scheduler: "linear"
   fp16: true
   dataloader_num_workers: 4
