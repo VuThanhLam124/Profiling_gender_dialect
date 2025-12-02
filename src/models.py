@@ -51,8 +51,11 @@ class ECAPATDNNEncoder(nn.Module):
         self.encoder = EncoderClassifier.from_hparams(
             source=model_name,
             savedir=f"pretrained_models/{model_name.split('/')[-1]}",
-            run_opts={"device": "cpu"}  # Load on CPU first, move to GPU later
+            run_opts={"device": "cpu"}  # Load on CPU first
         )
+        
+        # Force float32 for all encoder parameters
+        self.encoder.mods.float()
         
         # Determine embedding size
         if "ecapa" in model_name.lower():
@@ -68,6 +71,17 @@ class ECAPATDNNEncoder(nn.Module):
                 self.hidden_size = hidden_size
         
         self.config = Config(self.embedding_size)
+        
+        # Store device
+        self._device = None
+    
+    def to(self, device):
+        """Override to method to handle device movement properly"""
+        self._device = device
+        self.encoder.to(device)
+        # Ensure float32 after moving
+        self.encoder.mods.float()
+        return super().to(device)
     
     def forward(self, input_values: torch.Tensor, attention_mask: torch.Tensor = None):
         """
@@ -83,14 +97,20 @@ class ECAPATDNNEncoder(nn.Module):
         # Ensure float32 for SpeechBrain (doesn't support fp16)
         input_values = input_values.float()
         
-        # Move encoder to same device as input
+        # Move encoder to same device as input if needed
         device = input_values.device
-        self.encoder.to(device)
+        if self._device != device:
+            self.encoder.to(device)
+            self.encoder.mods.float()  # Ensure float32
+            self._device = device
         
         # SpeechBrain expects [B, T] audio at 16kHz
         # encode_batch handles feature extraction internally
         with torch.no_grad():
             embeddings = self.encoder.encode_batch(input_values)  # [B, 1, H]
+        
+        # Ensure output is float32
+        embeddings = embeddings.float()
         
         # Return object compatible with HuggingFace models
         class Output:

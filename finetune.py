@@ -660,6 +660,12 @@ def main(config_path):
     logger.info(f"Trainable parameters: {format_number(trainable_params)}")
     
     # Training arguments
+    # Force disable fp16 for ECAPA-TDNN (SpeechBrain doesn't support it)
+    use_fp16 = config['training']['fp16']
+    if is_ecapa:
+        use_fp16 = False
+        logger.info("FP16 disabled for ECAPA-TDNN (not supported by SpeechBrain)")
+    
     training_args = TrainingArguments(
         output_dir=config['output']['dir'],
         eval_strategy='epoch',
@@ -676,7 +682,7 @@ def main(config_path):
         metric_for_best_model=config['output']['metric_for_best_model'],
         greater_is_better=True,
         save_total_limit=config['output']['save_total_limit'],
-        fp16=config['training']['fp16'],
+        fp16=use_fp16,
         dataloader_num_workers=config['training']['dataloader_num_workers'],
         logging_steps=50,
         logging_first_step=True,
