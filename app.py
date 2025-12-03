@@ -206,9 +206,8 @@ class SpeakerProfilerApp:
                 """
                 ---
                 **Notes:**
-                - Supported formats: WAV, MP3, FLAC, OGG, M4A
+                - Supported formats: WAV, MP3
                 - Recommended duration: 3-10 seconds
-                - Best results with clear speech, minimal background noise
                 """
             )
             

@@ -303,12 +303,12 @@ def evaluate_model(model, dataloader, device):
     }
 
 
-def print_results(results, dataset_name, logger):
-    """Print detailed evaluation results"""
+def print_results(results, dataset_name, logger, output_dir=None):
+    """Print detailed evaluation results with confusion matrix analysis"""
     logger.info("")
-    logger.info("=" * 60)
+    logger.info("=" * 70)
     logger.info(f"RESULTS ON {dataset_name.upper()}")
-    logger.info("=" * 60)
+    logger.info("=" * 70)
     
     gender_acc = accuracy_score(results['gender_labels'], results['gender_preds']) * 100
     gender_f1 = f1_score(results['gender_labels'], results['gender_preds'], average='weighted') * 100
@@ -318,41 +318,100 @@ def print_results(results, dataset_name, logger):
     logger.info(f"Gender  - Accuracy: {gender_acc:.2f}%  |  F1: {gender_f1:.2f}%")
     logger.info(f"Dialect - Accuracy: {dialect_acc:.2f}%  |  F1: {dialect_f1:.2f}%")
     
+    # ============================================================
+    # Gender Classification Report
+    # ============================================================
     logger.info("")
-    logger.info("--- Gender Classification Report ---")
+    logger.info("-" * 70)
+    logger.info("GENDER CLASSIFICATION REPORT")
+    logger.info("-" * 70)
     report = classification_report(results['gender_labels'], results['gender_preds'],
                                    target_names=['Male', 'Female'], digits=4)
     for line in report.split('\n'):
         logger.info(line)
     
+    # Gender Confusion Matrix
+    gender_cm = confusion_matrix(results['gender_labels'], results['gender_preds'])
     logger.info("")
-    logger.info("--- Dialect Classification Report ---")
+    logger.info("Gender Confusion Matrix:")
+    logger.info(f"              Pred_Male  Pred_Female")
+    logger.info(f"True_Male     {gender_cm[0][0]:>8}    {gender_cm[0][1]:>8}")
+    logger.info(f"True_Female   {gender_cm[1][0]:>8}    {gender_cm[1][1]:>8}")
+    
+    # ============================================================
+    # Dialect Classification Report
+    # ============================================================
+    logger.info("")
+    logger.info("-" * 70)
+    logger.info("DIALECT CLASSIFICATION REPORT")
+    logger.info("-" * 70)
     report = classification_report(results['dialect_labels'], results['dialect_preds'],
                                    target_names=['North', 'Central', 'South'], digits=4)
     for line in report.split('\n'):
         logger.info(line)
     
-    logger.info("")
-    logger.info("Gender Confusion Matrix:")
-    cm = confusion_matrix(results['gender_labels'], results['gender_preds'])
-    logger.info(f"           Male  Female")
-    logger.info(f"Male     {cm[0][0]:6d}  {cm[0][1]:6d}")
-    logger.info(f"Female   {cm[1][0]:6d}  {cm[1][1]:6d}")
-    
+    # Dialect Confusion Matrix
+    dialect_cm = confusion_matrix(results['dialect_labels'], results['dialect_preds'])
     logger.info("")
     logger.info("Dialect Confusion Matrix:")
-    cm = confusion_matrix(results['dialect_labels'], results['dialect_preds'])
-    logger.info(f"           North  Central  South")
-    logger.info(f"North    {cm[0][0]:6d}  {cm[0][1]:7d}  {cm[0][2]:5d}")
-    logger.info(f"Central  {cm[1][0]:6d}  {cm[1][1]:7d}  {cm[1][2]:5d}")
-    logger.info(f"South    {cm[2][0]:6d}  {cm[2][1]:7d}  {cm[2][2]:5d}")
+    logger.info(f"              Pred_North  Pred_Central  Pred_South")
+    logger.info(f"True_North    {dialect_cm[0][0]:>9}    {dialect_cm[0][1]:>10}    {dialect_cm[0][2]:>9}")
+    logger.info(f"True_Central  {dialect_cm[1][0]:>9}    {dialect_cm[1][1]:>10}    {dialect_cm[1][2]:>9}")
+    logger.info(f"True_South    {dialect_cm[2][0]:>9}    {dialect_cm[2][1]:>10}    {dialect_cm[2][2]:>9}")
+    
+    # ============================================================
+    # Save Confusion Matrix Plots
+    # ============================================================
+    if output_dir:
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+            
+            # Gender confusion matrix
+            sns.heatmap(
+                gender_cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=['Male', 'Female'], yticklabels=['Male', 'Female'],
+                ax=axes[0], annot_kws={'size': 14}
+            )
+            axes[0].set_title(f'Gender Confusion Matrix\n{dataset_name}', fontsize=14, fontweight='bold')
+            axes[0].set_xlabel('Predicted', fontsize=12)
+            axes[0].set_ylabel('True', fontsize=12)
+            
+            # Dialect confusion matrix
+            sns.heatmap(
+                dialect_cm, annot=True, fmt='d', cmap='Oranges',
+                xticklabels=['North', 'Central', 'South'], yticklabels=['North', 'Central', 'South'],
+                ax=axes[1], annot_kws={'size': 14}
+            )
+            axes[1].set_title(f'Dialect Confusion Matrix\n{dataset_name}', fontsize=14, fontweight='bold')
+            axes[1].set_xlabel('Predicted', fontsize=12)
+            axes[1].set_ylabel('True', fontsize=12)
+            
+            plt.tight_layout()
+            
+            # Save plot
+            plot_path = os.path.join(output_dir, f'confusion_matrix_{dataset_name.lower().replace(" ", "_")}.png')
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            logger.info(f"Confusion matrix plot saved to: {plot_path}")
+        except ImportError:
+            logger.warning("matplotlib/seaborn not available, skipping confusion matrix plot")
+        except Exception as e:
+            logger.warning(f"Failed to save confusion matrix plot: {e}")
     
     return {
         'dataset': dataset_name,
         'gender_acc': gender_acc,
         'gender_f1': gender_f1,
         'dialect_acc': dialect_acc,
-        'dialect_f1': dialect_f1
+        'dialect_f1': dialect_f1,
+        'gender_cm': gender_cm.tolist(),
+        'dialect_cm': dialect_cm.tolist()
     }
 
 
@@ -520,7 +579,7 @@ def main():
     )
     
     results = evaluate_model(model, test_loader, device)
-    metrics = print_results(results, test_display, logger)
+    metrics = print_results(results, test_display, logger, output_dir=args.output_dir)
     results_list.append(metrics)
     
     # Test set 2 (optional)
@@ -539,7 +598,7 @@ def main():
         )
         
         results2 = evaluate_model(model, test_loader2, device)
-        metrics2 = print_results(results2, test_display2, logger)
+        metrics2 = print_results(results2, test_display2, logger, output_dir=args.output_dir)
         results_list.append(metrics2)
     
     # Compare with baseline (only for ViSpeech)

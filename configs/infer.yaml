@@ -2,8 +2,8 @@
 
 # Model
 model:
-  checkpoint: "model/wav2vec"
-  name: "facebook/wav2vec2-base"
+  checkpoint: "model/wavlm"
+  name: "microsoft/wavlm-base-plus"
   head_hidden_dim: 512
 
 # Audio Processing
