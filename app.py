@@ -9,6 +9,7 @@ Usage:
 import os
 import argparse
 import tempfile
+import time
 import numpy as np
 import torch
 import librosa
@@ -99,6 +100,9 @@ class SpeakerProfilerApp:
             if sr != self.sampling_rate:
                 audio = librosa.resample(audio, orig_sr=sr, target_sr=self.sampling_rate)
             
+            # Calculate original audio duration BEFORE preprocessing
+            audio_duration = len(audio) / self.sampling_rate
+            
             audio = preprocess_audio(
                 audio,
                 sampling_rate=self.sampling_rate,
@@ -114,10 +118,16 @@ class SpeakerProfilerApp:
             
             input_values = inputs.input_values.to(self.device)
             
+            # Measure inference time
+            start_time = time.perf_counter()
+            
             with torch.no_grad():
                 outputs = self.model(input_values)
                 gender_logits = outputs['gender_logits']
                 dialect_logits = outputs['dialect_logits']
+            
+            # Calculate inference time
+            infer_time = (time.perf_counter() - start_time) * 1000  # Convert to ms
             
             gender_probs = torch.softmax(gender_logits, dim=-1).cpu().numpy()[0]
             dialect_probs = torch.softmax(dialect_logits, dim=-1).cpu().numpy()[0]
@@ -134,9 +144,9 @@ class SpeakerProfilerApp:
             gender_result = f"{gender_name} ({gender_conf:.1f}%)"
             dialect_result = f"{dialect_name} ({dialect_conf:.1f}%)"
             
-            details = self._format_details(gender_probs, dialect_probs)
+            details = self._format_details(gender_probs, dialect_probs, infer_time, audio_duration)
             
-            self.logger.info(f"Prediction: Gender={gender_name}, Dialect={dialect_name}")
+            self.logger.info(f"Prediction: Gender={gender_name}, Dialect={dialect_name} | Inference time: {infer_time:.2f}ms | Audio: {audio_duration:.2f}s")
             
             return gender_result, dialect_result, details
             
@@ -144,17 +154,31 @@ class SpeakerProfilerApp:
             self.logger.error(f"Prediction error: {e}")
             return "Error", "Error", f"Error: {str(e)}"
     
-    def _format_details(self, gender_probs: np.ndarray, dialect_probs: np.ndarray) -> str:
+    def _format_details(self, gender_probs: np.ndarray, dialect_probs: np.ndarray, infer_time: float = None, audio_duration: float = None) -> str:
         """Format detailed prediction results"""
+        # Gender label names
+        gender_names = ['Female', 'Male']
+        # Dialect label names  
+        dialect_names = ['North', 'Central', 'South']
+        
         lines = []
         lines.append("Gender Probabilities:")
-        for i, label in enumerate(self.gender_labels):
-            lines.append(f"  {label}: {gender_probs[i]*100:.2f}%")
+        for i, name in enumerate(gender_names):
+            lines.append(f"  {name}: {gender_probs[i]*100:.2f}%")
         
         lines.append("")
         lines.append("Dialect Probabilities:")
-        for i, label in enumerate(self.dialect_labels):
-            lines.append(f"  {label}: {dialect_probs[i]*100:.2f}%")
+        for i, name in enumerate(dialect_names):
+            lines.append(f"  {name}: {dialect_probs[i]*100:.2f}%")
+        
+        lines.append("")
+        lines.append("─" * 30)
+        
+        if audio_duration is not None:
+            lines.append(f"Audio Duration: {audio_duration:.2f} s")
+        
+        if infer_time is not None:
+            lines.append(f"Inference Time: {infer_time:.2f} ms")
         
         return "\n".join(lines)
     

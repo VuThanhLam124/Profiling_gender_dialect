@@ -4,7 +4,7 @@
 model:
   checkpoint: "model/wavlm"
   name: "microsoft/wavlm-base-plus"
-  head_hidden_dim: 512
+  head_hidden_dim: 256
 
 # Audio Processing
 audio:
