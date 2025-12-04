@@ -85,6 +85,7 @@ class ViSpeechDataset(Dataset):
     """
     Dataset class for speaker profiling - loads raw audio.
     Supports data augmentation for training.
+    Handles both Whisper (input_features) and WavLM/HuBERT/Wav2Vec2 (input_values).
     """
     
     def __init__(
@@ -102,6 +103,10 @@ class ViSpeechDataset(Dataset):
         self.max_length = int(self.sampling_rate * config['audio']['max_duration'])
         self.is_training = is_training
         self.logger = get_logger()
+        
+        # Check if this is a Whisper model (uses input_features instead of input_values)
+        model_name = config.get('model', {}).get('name', '').lower()
+        self.is_whisper = 'whisper' in model_name
         
         # Data augmentation (only for training)
         augment_prob = config.get('augmentation', {}).get('prob', 0.8)
@@ -165,8 +170,14 @@ class ViSpeechDataset(Dataset):
             padding=True
         )
         
+        # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
+        if self.is_whisper:
+            input_tensor = inputs.input_features.squeeze(0)
+        else:
+            input_tensor = inputs.input_values.squeeze(0)
+        
         return {
-            'input_values': inputs.input_values.squeeze(0),
+            'input_values': input_tensor,
             'gender_labels': torch.tensor(row['gender_label'], dtype=torch.long),
             'dialect_labels': torch.tensor(row['dialect_label'], dtype=torch.long)
         }
@@ -176,6 +187,7 @@ class ViMDDataset(Dataset):
     """
     Dataset class for ViMD (HuggingFace format).
     Loads audio from HuggingFace datasets with path/bytes/array support.
+    Handles both Whisper (input_features) and WavLM/HuBERT/Wav2Vec2 (input_values).
     """
     
     def __init__(
@@ -191,6 +203,10 @@ class ViMDDataset(Dataset):
         self.max_length = int(self.sampling_rate * config['audio']['max_duration'])
         self.is_training = is_training
         self.logger = get_logger()
+        
+        # Check if this is a Whisper model (uses input_features instead of input_values)
+        model_name = config.get('model', {}).get('name', '').lower()
+        self.is_whisper = 'whisper' in model_name
         
         # Label mappings
         self.region_to_dialect = config['labels'].get('region_to_dialect', {
@@ -313,6 +329,12 @@ class ViMDDataset(Dataset):
                 padding=True
             )
             
+            # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
+            if self.is_whisper:
+                input_tensor = inputs.input_features.squeeze(0)
+            else:
+                input_tensor = inputs.input_values.squeeze(0)
+            
             # Map labels - ViMD uses 'gender' (int) and 'region' (string)
             gender_raw = item.get('gender', 0)
             region = item.get('region', 'North')
@@ -327,7 +349,7 @@ class ViMDDataset(Dataset):
             dialect_label = self.region_to_dialect.get(region, 0)
             
             return {
-                'input_values': inputs.input_values.squeeze(0),
+                'input_values': input_tensor,
                 'gender_labels': torch.tensor(gender_label, dtype=torch.long),
                 'dialect_labels': torch.tensor(dialect_label, dtype=torch.long)
             }
@@ -341,8 +363,15 @@ class ViMDDataset(Dataset):
                 return_tensors="pt",
                 padding=True
             )
+            
+            # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
+            if self.is_whisper:
+                input_tensor = inputs.input_features.squeeze(0)
+            else:
+                input_tensor = inputs.input_values.squeeze(0)
+            
             return {
-                'input_values': inputs.input_values.squeeze(0),
+                'input_values': input_tensor,
                 'gender_labels': torch.tensor(0, dtype=torch.long),
                 'dialect_labels': torch.tensor(0, dtype=torch.long)
             }
