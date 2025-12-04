@@ -108,6 +108,12 @@ class ViSpeechDataset(Dataset):
         model_name = config.get('model', {}).get('name', '').lower()
         self.is_whisper = 'whisper' in model_name
         
+        # Whisper requires exactly 30 seconds of audio (480000 samples at 16kHz)
+        # This produces mel features with 3000 frames as expected by Whisper encoder
+        if self.is_whisper:
+            self.whisper_length = self.sampling_rate * 30  # 30 seconds
+            self.logger.info(f"Whisper mode: audio will be padded/truncated to 30 seconds ({self.whisper_length} samples)")
+        
         # Data augmentation (only for training)
         augment_prob = config.get('augmentation', {}).get('prob', 0.8)
         if is_training and AUGMENTATION_AVAILABLE:
@@ -140,23 +146,26 @@ class ViSpeechDataset(Dataset):
             # Normalize
             audio = audio / (np.max(np.abs(audio)) + 1e-8)
             
+            # Determine target length based on model type
+            target_length = self.whisper_length if self.is_whisper else self.max_length
+            
             # Pad or truncate
-            if len(audio) < self.max_length:
-                audio = np.pad(audio, (0, self.max_length - len(audio)))
+            if len(audio) < target_length:
+                audio = np.pad(audio, (0, target_length - len(audio)))
             else:
                 if self.is_training:
                     # Random crop for training
-                    start = np.random.randint(0, len(audio) - self.max_length + 1)
+                    start = np.random.randint(0, len(audio) - target_length + 1)
                 else:
                     # Center crop for validation/test
-                    start = (len(audio) - self.max_length) // 2
-                audio = audio[start:start + self.max_length]
+                    start = (len(audio) - target_length) // 2
+                audio = audio[start:start + target_length]
             
             return audio
             
         except Exception as e:
             self.logger.error(f"Error loading {audio_path}: {e}")
-            return np.zeros(self.max_length)
+            return np.zeros(self.whisper_length if self.is_whisper else self.max_length)
     
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
@@ -207,6 +216,12 @@ class ViMDDataset(Dataset):
         # Check if this is a Whisper model (uses input_features instead of input_values)
         model_name = config.get('model', {}).get('name', '').lower()
         self.is_whisper = 'whisper' in model_name
+        
+        # Whisper requires exactly 30 seconds of audio (480000 samples at 16kHz)
+        # This produces mel features with 3000 frames as expected by Whisper encoder
+        if self.is_whisper:
+            self.whisper_length = self.sampling_rate * 30  # 30 seconds
+            self.logger.info(f"Whisper mode: audio will be padded/truncated to 30 seconds ({self.whisper_length} samples)")
         
         # Label mappings
         self.region_to_dialect = config['labels'].get('region_to_dialect', {
@@ -271,7 +286,8 @@ class ViMDDataset(Dataset):
             
             # Validation
             if audio is None or len(audio) == 0:
-                return np.zeros(self.max_length, dtype=np.float32)
+                target_len = self.whisper_length if self.is_whisper else self.max_length
+                return np.zeros(target_len, dtype=np.float32)
             
             # Convert to mono if stereo
             if len(audio.shape) > 1:
@@ -297,22 +313,27 @@ class ViMDDataset(Dataset):
                 if max_val > 1e-8:
                     audio = audio / max_val
                 else:
-                    return np.zeros(self.max_length, dtype=np.float32)
+                    target_len = self.whisper_length if self.is_whisper else self.max_length
+                    return np.zeros(target_len, dtype=np.float32)
+            
+            # Determine target length based on model type
+            target_length = self.whisper_length if self.is_whisper else self.max_length
             
             # Pad or truncate
-            if len(audio) < self.max_length:
-                audio = np.pad(audio, (0, self.max_length - len(audio)))
+            if len(audio) < target_length:
+                audio = np.pad(audio, (0, target_length - len(audio)))
             else:
                 if self.is_training:
-                    start = np.random.randint(0, max(1, len(audio) - self.max_length))
+                    start = np.random.randint(0, max(1, len(audio) - target_length))
                 else:
-                    start = max(0, (len(audio) - self.max_length) // 2)
-                audio = audio[start:start + self.max_length]
+                    start = max(0, (len(audio) - target_length) // 2)
+                audio = audio[start:start + target_length]
             
             return audio.astype(np.float32)
             
         except Exception as e:
-            return np.zeros(self.max_length, dtype=np.float32)
+            target_len = self.whisper_length if self.is_whisper else self.max_length
+            return np.zeros(target_len, dtype=np.float32)
     
     def __getitem__(self, idx):
         try:
@@ -356,7 +377,9 @@ class ViMDDataset(Dataset):
             
         except Exception as e:
             # Return dummy data to prevent crash
-            dummy_audio = np.zeros(self.max_length, dtype=np.float32)
+            # Use correct length for Whisper (30s) vs other models
+            target_len = self.whisper_length if self.is_whisper else self.max_length
+            dummy_audio = np.zeros(target_len, dtype=np.float32)
             inputs = self.feature_extractor(
                 dummy_audio,
                 sampling_rate=self.sampling_rate,
