@@ -104,9 +104,9 @@ class ViSpeechDataset(Dataset):
         self.is_training = is_training
         self.logger = get_logger()
         
-        # Check if this is a Whisper model (uses input_features instead of input_values)
+        # Check if this is a Whisper/PhoWhisper model (uses input_features instead of input_values)
         model_name = config.get('model', {}).get('name', '').lower()
-        self.is_whisper = 'whisper' in model_name
+        self.is_whisper = 'whisper' in model_name or 'phowhisper' in model_name
         
         # Whisper requires exactly 30 seconds of audio (480000 samples at 16kHz)
         # This produces mel features with 3000 frames as expected by Whisper encoder
@@ -213,9 +213,9 @@ class ViMDDataset(Dataset):
         self.is_training = is_training
         self.logger = get_logger()
         
-        # Check if this is a Whisper model (uses input_features instead of input_values)
+        # Check if this is a Whisper/PhoWhisper model (uses input_features instead of input_values)
         model_name = config.get('model', {}).get('name', '').lower()
-        self.is_whisper = 'whisper' in model_name
+        self.is_whisper = 'whisper' in model_name or 'phowhisper' in model_name
         
         # Whisper requires exactly 30 seconds of audio (480000 samples at 16kHz)
         # This produces mel features with 3000 frames as expected by Whisper encoder

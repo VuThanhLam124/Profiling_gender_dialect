@@ -160,6 +160,13 @@ ENCODER_REGISTRY = {
     "openai/whisper-large-v2": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
     "openai/whisper-large-v3": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
     
+    # PhoWhisper - Vietnamese fine-tuned Whisper (VinAI)
+    "vinai/PhoWhisper-tiny": {"class": WhisperModel, "hidden_size": 384, "is_whisper": True},
+    "vinai/PhoWhisper-base": {"class": WhisperModel, "hidden_size": 512, "is_whisper": True},
+    "vinai/PhoWhisper-small": {"class": WhisperModel, "hidden_size": 768, "is_whisper": True},
+    "vinai/PhoWhisper-medium": {"class": WhisperModel, "hidden_size": 1024, "is_whisper": True},
+    "vinai/PhoWhisper-large": {"class": WhisperModel, "hidden_size": 1280, "is_whisper": True},
+    
     # ECAPA-TDNN (SpeechBrain)
     "speechbrain/spkrec-ecapa-voxceleb": {
         "class": ECAPATDNNEncoder, 
@@ -197,7 +204,7 @@ def get_encoder_info(model_name: str) -> dict:
             return {"class": HubertModel, "hidden_size": hidden_size}
         elif 'wav2vec2' in model_name.lower():
             return {"class": Wav2Vec2Model, "hidden_size": hidden_size}
-        elif 'whisper' in model_name.lower():
+        elif 'whisper' in model_name.lower() or 'phowhisper' in model_name.lower():
             return {"class": WhisperModel, "hidden_size": hidden_size, "is_whisper": True}
         else:
             # Default to Wav2Vec2 architecture
