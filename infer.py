@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from transformers import Wav2Vec2FeatureExtractor
+from transformers import Wav2Vec2FeatureExtractor, WhisperFeatureExtractor
 
 from src.models import MultiTaskSpeakerModel
 from src.utils import (
@@ -39,6 +39,10 @@ class SpeakerProfiler:
         self.gender_labels = config['labels']['gender']
         self.dialect_labels = config['labels']['dialect']
         
+        # Check if this is a Whisper/PhoWhisper model
+        model_name = config['model']['name'].lower()
+        self.is_whisper = 'whisper' in model_name or 'phowhisper' in model_name
+        
         self._load_model()
     
     def _load_model(self):
@@ -52,6 +56,11 @@ class SpeakerProfiler:
             # ECAPA-TDNN: use Wav2Vec2 feature extractor for audio normalization
             self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
                 "facebook/wav2vec2-base"
+            )
+        elif self.is_whisper:
+            # Whisper/PhoWhisper: use WhisperFeatureExtractor
+            self.feature_extractor = WhisperFeatureExtractor.from_pretrained(
+                model_name
             )
         else:
             self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
@@ -71,11 +80,23 @@ class SpeakerProfiler:
     
     def preprocess_audio(self, audio_path):
         """Load and preprocess audio file"""
+        # Whisper requires 30 seconds of audio
+        if self.is_whisper:
+            max_duration = 30
+        else:
+            max_duration = self.max_duration
+        
         audio = load_and_preprocess_audio(
             audio_path,
             sampling_rate=self.sampling_rate,
-            max_duration=self.max_duration
+            max_duration=max_duration
         )
+        
+        # Whisper needs exactly 30 seconds - pad if necessary
+        if self.is_whisper:
+            target_len = self.sampling_rate * 30
+            if len(audio) < target_len:
+                audio = np.pad(audio, (0, target_len - len(audio)))
         
         inputs = self.feature_extractor(
             audio,
@@ -84,7 +105,11 @@ class SpeakerProfiler:
             padding=True
         )
         
-        return inputs.input_values
+        # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
+        if self.is_whisper:
+            return inputs.input_features
+        else:
+            return inputs.input_values
     
     def predict(self, audio_path):
         """Predict gender and dialect from audio file"""

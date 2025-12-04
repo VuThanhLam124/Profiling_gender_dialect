@@ -151,6 +151,9 @@ ENCODER_REGISTRY = {
     "facebook/wav2vec2-large-960h": {"class": Wav2Vec2Model, "hidden_size": 1024},
     "facebook/wav2vec2-xls-r-300m": {"class": Wav2Vec2Model, "hidden_size": 1024},
     
+    # Vietnamese Wav2Vec2 (VLSP2020)
+    "nguyenvulebinh/wav2vec2-base-vi-vlsp2020": {"class": Wav2Vec2Model, "hidden_size": 768},
+    
     # Whisper variants (encoder only)
     "openai/whisper-tiny": {"class": WhisperModel, "hidden_size": 384, "is_whisper": True},
     "openai/whisper-base": {"class": WhisperModel, "hidden_size": 512, "is_whisper": True},

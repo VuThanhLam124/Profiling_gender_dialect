@@ -52,6 +52,14 @@ class RawAudioTestDataset(Dataset):
         self.sr = config.get('audio', {}).get('sampling_rate', 16000)
         self.max_duration = config.get('audio', {}).get('max_duration', 5)
         
+        # Check if this is a Whisper/PhoWhisper model
+        model_name = config.get('model', {}).get('name', '').lower()
+        self.is_whisper = 'whisper' in model_name or 'phowhisper' in model_name
+        
+        # Whisper requires exactly 30 seconds of audio
+        if self.is_whisper:
+            self.whisper_length = self.sr * 30
+        
         # Auto-detect column names
         col_mapping = {
             'audio_name': ['audio_name', 'filename', 'file', 'path', 'audio_path'],
@@ -84,10 +92,17 @@ class RawAudioTestDataset(Dataset):
         if max_val > 0:
             waveform = waveform / max_val
         
-        # Truncate/pad
-        max_len = int(self.sr * self.max_duration)
-        if len(waveform) > max_len:
-            waveform = waveform[:max_len]
+        # Determine target length based on model type
+        if self.is_whisper:
+            target_len = self.whisper_length
+        else:
+            target_len = int(self.sr * self.max_duration)
+        
+        # Truncate or pad
+        if len(waveform) > target_len:
+            waveform = waveform[:target_len]
+        elif len(waveform) < target_len:
+            waveform = np.pad(waveform, (0, target_len - len(waveform)))
         
         return waveform
     
@@ -114,8 +129,14 @@ class RawAudioTestDataset(Dataset):
         gender_label = self.gender_map.get(row[gender_col], 0)
         dialect_label = self.dialect_map.get(row[dialect_col], 0)
         
+        # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
+        if self.is_whisper:
+            input_tensor = inputs.input_features.squeeze(0)
+        else:
+            input_tensor = inputs.input_values.squeeze(0)
+        
         return {
-            'input_values': inputs.input_values.squeeze(0),
+            'input_values': input_tensor,
             'gender_labels': torch.tensor(gender_label, dtype=torch.long),
             'dialect_labels': torch.tensor(dialect_label, dtype=torch.long)
         }
@@ -131,6 +152,15 @@ class ViMDTestDataset(Dataset):
         self.sr = config.get('audio', {}).get('sampling_rate', 16000)
         self.max_duration = config.get('audio', {}).get('max_duration', 5)
         self.max_length = int(self.sr * self.max_duration)
+        
+        # Check if this is a Whisper/PhoWhisper model
+        model_name = config.get('model', {}).get('name', '').lower()
+        self.is_whisper = 'whisper' in model_name or 'phowhisper' in model_name
+        
+        # Whisper requires exactly 30 seconds of audio
+        if self.is_whisper:
+            self.whisper_length = self.sr * 30
+            self.max_length = self.whisper_length
         
         # Label mappings
         labels_config = config.get('labels', {})
@@ -195,6 +225,8 @@ class ViMDTestDataset(Dataset):
             
             if len(audio) > self.max_length:
                 audio = audio[:self.max_length]
+            elif len(audio) < self.max_length:
+                audio = np.pad(audio, (0, self.max_length - len(audio)))
             
             return audio.astype(np.float32)
             
@@ -223,8 +255,14 @@ class ViMDTestDataset(Dataset):
             
             dialect_label = self.region_to_dialect.get(region, 0)
             
+            # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
+            if self.is_whisper:
+                input_tensor = inputs.input_features.squeeze(0)
+            else:
+                input_tensor = inputs.input_values.squeeze(0)
+            
             return {
-                'input_values': inputs.input_values.squeeze(0),
+                'input_values': input_tensor,
                 'gender_labels': torch.tensor(gender_label, dtype=torch.long),
                 'dialect_labels': torch.tensor(dialect_label, dtype=torch.long)
             }
@@ -237,8 +275,15 @@ class ViMDTestDataset(Dataset):
                 return_tensors="pt",
                 padding=True
             )
+            
+            # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
+            if self.is_whisper:
+                input_tensor = inputs.input_features.squeeze(0)
+            else:
+                input_tensor = inputs.input_values.squeeze(0)
+            
             return {
-                'input_values': inputs.input_values.squeeze(0),
+                'input_values': input_tensor,
                 'gender_labels': torch.tensor(0, dtype=torch.long),
                 'dialect_labels': torch.tensor(0, dtype=torch.long)
             }

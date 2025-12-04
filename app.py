@@ -45,17 +45,25 @@ class SpeakerProfilerApp:
     
     def _load_model(self):
         """Load model and feature extractor"""
-        from transformers import Wav2Vec2FeatureExtractor
+        from transformers import Wav2Vec2FeatureExtractor, WhisperFeatureExtractor
         
         self.logger.info("Loading model...")
         
         model_name = self.config['model']['name']
         is_ecapa = 'ecapa' in model_name.lower() or 'speechbrain' in model_name.lower()
         
+        # Check if this is a Whisper/PhoWhisper model
+        self.is_whisper = 'whisper' in model_name.lower() or 'phowhisper' in model_name.lower()
+        
         if is_ecapa:
             # ECAPA-TDNN: use Wav2Vec2 feature extractor for audio normalization
             self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
                 "facebook/wav2vec2-base"
+            )
+        elif self.is_whisper:
+            # Whisper/PhoWhisper: use WhisperFeatureExtractor
+            self.feature_extractor = WhisperFeatureExtractor.from_pretrained(
+                model_name
             )
         else:
             self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
@@ -103,11 +111,23 @@ class SpeakerProfilerApp:
             # Calculate original audio duration BEFORE preprocessing
             audio_duration = len(audio) / self.sampling_rate
             
+            # Whisper requires 30 seconds of audio
+            if self.is_whisper:
+                max_duration = 30
+            else:
+                max_duration = self.max_duration
+            
             audio = preprocess_audio(
                 audio,
                 sampling_rate=self.sampling_rate,
-                max_duration=self.max_duration
+                max_duration=max_duration
             )
+            
+            # Whisper needs exactly 30 seconds - pad if necessary
+            if self.is_whisper:
+                target_len = self.sampling_rate * 30
+                if len(audio) < target_len:
+                    audio = np.pad(audio, (0, target_len - len(audio)))
             
             inputs = self.feature_extractor(
                 audio,
@@ -116,7 +136,11 @@ class SpeakerProfilerApp:
                 padding=True
             )
             
-            input_values = inputs.input_values.to(self.device)
+            # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
+            if self.is_whisper:
+                input_values = inputs.input_features.to(self.device)
+            else:
+                input_values = inputs.input_values.to(self.device)
             
             # Measure inference time
             start_time = time.perf_counter()
