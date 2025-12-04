@@ -290,30 +290,48 @@ class ViMDTestDataset(Dataset):
 
 
 def collate_fn(batch):
-    """Custom collate function for variable length audio"""
-    max_len = max(item['input_values'].shape[0] for item in batch)
+    """Custom collate function for variable length audio
     
-    input_values = []
-    attention_mask = []
+    Handles both:
+    - 1D tensors from WavLM/HuBERT/Wav2Vec2 [T]
+    - 2D tensors from Whisper [80, T] (mel spectrogram)
+    """
+    first_item = batch[0]['input_values']
     
-    for item in batch:
-        seq_len = item['input_values'].shape[0]
-        # Pad
-        padded = torch.zeros(max_len)
-        padded[:seq_len] = item['input_values']
-        input_values.append(padded)
+    # Check if Whisper (2D: [n_mels, time]) or other models (1D: [time])
+    if len(first_item.shape) == 2:
+        # Whisper: mel spectrogram [80, 3000] - all same size, just stack
+        return {
+            'input_values': torch.stack([item['input_values'] for item in batch]),
+            'attention_mask': None,  # Whisper doesn't use attention mask
+            'gender_labels': torch.stack([item['gender_labels'] for item in batch]),
+            'dialect_labels': torch.stack([item['dialect_labels'] for item in batch])
+        }
+    else:
+        # WavLM/HuBERT/Wav2Vec2: 1D waveform [T]
+        max_len = max(item['input_values'].shape[0] for item in batch)
         
-        # Attention mask
-        mask = torch.zeros(max_len)
-        mask[:seq_len] = 1.0
-        attention_mask.append(mask)
-    
-    return {
-        'input_values': torch.stack(input_values),
-        'attention_mask': torch.stack(attention_mask),
-        'gender_labels': torch.stack([item['gender_labels'] for item in batch]),
-        'dialect_labels': torch.stack([item['dialect_labels'] for item in batch])
-    }
+        input_values = []
+        attention_mask = []
+        
+        for item in batch:
+            seq_len = item['input_values'].shape[0]
+            # Pad
+            padded = torch.zeros(max_len)
+            padded[:seq_len] = item['input_values']
+            input_values.append(padded)
+            
+            # Attention mask
+            mask = torch.zeros(max_len)
+            mask[:seq_len] = 1.0
+            attention_mask.append(mask)
+        
+        return {
+            'input_values': torch.stack(input_values),
+            'attention_mask': torch.stack(attention_mask),
+            'gender_labels': torch.stack([item['gender_labels'] for item in batch]),
+            'dialect_labels': torch.stack([item['dialect_labels'] for item in batch])
+        }
 
 
 # ============================================================
