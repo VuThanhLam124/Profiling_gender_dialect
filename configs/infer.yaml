@@ -2,8 +2,8 @@
 
 # Model
 model:
-  checkpoint: "model/wavlm"
-  name: "microsoft/wavlm-base-plus"
+  checkpoint: "model/vulehuubinh"
+  name: "nguyenvulebinh/wav2vec2-base-vi-vlsp2020"
   head_hidden_dim: 256
 
 # Audio Processing
