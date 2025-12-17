@@ -59,9 +59,9 @@ python infer.py --config configs/infer.yaml --audio path/to/audio.wav
 ### Result:
 | Mô hình | Kích thước tham số | Nhiệm vụ phân loại | Acc. ViSpeech (Clean) | Acc. ViSpeech (Noisy) | Acc. ViMD (Baseline) |
 |---------|-------------------|-------------------|----------------------|----------------------|----------------------|
-| wavlm-base-plus | 94 triệu | Gender | 96.53% | 97.35% | 98.66% |
+| wavlm-base-plus | ~94 triệu | Gender | 96.53% | 97.35% | 98.66% |
 | | | Dialect | 88.33% | 84.41% | 88.49% |
-| wav2vec2-base | 95 triệu | Gender | 93.13% | 95.59% | 98.52% |
+| wav2vec2-base | ~95 triệu | Gender | 93.13% | 95.59% | 98.52% |
 | | | Dialect | 87.13% | 83.63% | 88.65% |
 | hubert-base-ls960 | ~96 triệu | Gender | 96.93% | 96.67% | 98.62% |
 | | | Dialect | 87.40% | 82.55% | 87.52% |
@@ -71,3 +71,10 @@ python infer.py --config configs/infer.yaml --audio path/to/audio.wav
 | | | Dialect | 93.28% | N/A | 90.67% |
 | wav2vec2-base-vi-vlsp2020 | ~95 triệu | Gender | N/A | N/A | 98.72% |
 | | | Dialect | N/A | N/A | 90.61% |
+
+### Model
+
+
+### Citation:
+https://github.com/TranNguyenNB/ViSpeech
+https://huggingface.co/datasets/nguyendv02/ViMD_Dataset
