@@ -17,6 +17,27 @@ python eval.py --checkpoint output/best_model --config configs/eval.yaml --test_
 python infer.py --config configs/infer.yaml --audio path/to/audio.wav
 ```
 
+### Infer (Pho model on Hugging Face Hub)
+
+```bash
+python infer.py --config configs/infer_pho_hf.yaml --audio path/to/audio.wav
+```
+
+### Install from PyPI (inference)
+
+```bash
+pip install vn-speaker-profiling
+vn-speaker-profiling-infer --audio path/to/audio.wav
+```
+
+### Publish to PyPI (maintainers)
+
+```bash
+python -m pip install -U build twine
+python -m build
+python -m twine upload dist/*
+```
+
 ### Datasets:
 
 - [ViMD Dataset](https://huggingface.co/datasets/nguyendv02/ViMD_Dataset)

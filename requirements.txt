@@ -16,3 +16,4 @@ wandb>=0.16.0
 datasets==2.21.0
 safetensors
 speechbrain>=1.0.0
+huggingface_hub>=0.22.0,<1.0

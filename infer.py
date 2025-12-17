@@ -22,6 +22,7 @@ from src.utils import (
     load_config,
     get_device,
     load_model_checkpoint,
+    resolve_checkpoint_dir,
     load_and_preprocess_audio
 )
 
@@ -35,6 +36,7 @@ class SpeakerProfiler:
         self.device = get_device(config['inference']['device'])
         self.sampling_rate = config['audio']['sampling_rate']
         self.max_duration = config['audio']['max_duration']
+        self.checkpoint_dir = resolve_checkpoint_dir(config['model']['checkpoint'])
         
         self.gender_labels = config['labels']['gender']
         self.dialect_labels = config['labels']['dialect']
@@ -64,13 +66,13 @@ class SpeakerProfiler:
             )
         else:
             self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-                self.config['model']['checkpoint']
+                self.checkpoint_dir
             )
         
         self.model = MultiTaskSpeakerModel(model_name)
         self.model = load_model_checkpoint(
             self.model,
-            self.config['model']['checkpoint'],
+            self.checkpoint_dir,
             str(self.device)
         )
         

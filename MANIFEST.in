@@ -1,0 +1,6 @@
+prune model
+prune notebooks
+prune output
+prune mlruns
+exclude model.7z
+

@@ -13,6 +13,58 @@ from omegaconf import OmegaConf
 from typing import Union, Optional, Tuple
 
 
+def resolve_checkpoint_dir(checkpoint: Union[str, Path]) -> str:
+    """
+    Resolve a model checkpoint directory.
+
+    Supports:
+    - Local directory paths
+    - Hugging Face Hub model repos via:
+        - "hf:owner/repo" or "hf://owner/repo"
+        - "owner/repo" (only if local path doesn't exist)
+      Optional revision: "hf:owner/repo@rev"
+    """
+    checkpoint_str = str(checkpoint)
+
+    # Local path
+    if os.path.exists(checkpoint_str):
+        return checkpoint_str
+
+    # HF Hub reference
+    repo_id = None
+    revision = None
+
+    if checkpoint_str.startswith("hf://"):
+        repo_id = checkpoint_str[len("hf://") :]
+    elif checkpoint_str.startswith("hf:"):
+        repo_id = checkpoint_str[len("hf:") :]
+    else:
+        # Fallback: treat as repo id if it looks like "owner/repo"
+        parts = checkpoint_str.split("/")
+        if len(parts) == 2 and all(parts) and " " not in checkpoint_str:
+            repo_id = checkpoint_str
+
+    if repo_id is None:
+        raise FileNotFoundError(
+            f"Checkpoint not found: {checkpoint_str}. "
+            "Provide an existing directory path or an HF repo like 'hf:owner/repo'."
+        )
+
+    if "@" in repo_id:
+        repo_id, revision = repo_id.split("@", 1)
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as e:
+        raise ImportError(
+            "huggingface_hub is required to download checkpoints from the Hub. "
+            "Install it with: pip install huggingface_hub"
+        ) from e
+
+    local_dir = snapshot_download(repo_id, repo_type="model", revision=revision)
+    return local_dir
+
+
 def setup_logging(
     name: str = "speaker_profiling",
     level: int = logging.INFO,
@@ -205,6 +257,8 @@ def load_model_checkpoint(
         Model with loaded weights
     """
     logger = get_logger()
+
+    checkpoint_path = resolve_checkpoint_dir(checkpoint_path)
     
     safetensors_path = os.path.join(checkpoint_path, 'model.safetensors')
     pytorch_path = os.path.join(checkpoint_path, 'pytorch_model.bin')

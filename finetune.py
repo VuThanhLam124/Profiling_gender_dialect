@@ -616,26 +616,31 @@ def main(config_path):
     wandb_enabled = wandb_config.get('enabled', True)
     
     if wandb_enabled:
-        wandb_api_key = wandb_config.get('api_key', 'f05e29c3466ec288e97041e0e3d541c4087096a6')
-        wandb.login(key=wandb_api_key)
+        wandb_api_key = wandb_config.get('api_key') or os.environ.get("WANDB_API_KEY")
+        if not wandb_api_key:
+            logger.warning("WandB enabled but no API key found; disabling WandB.")
+            wandb_enabled = False
+        else:
+            wandb.login(key=wandb_api_key)
         
         project_name = wandb_config.get('project', 'speaker-profiling')
         run_name = wandb_config.get('run_name', None)
         
-        wandb.init(
-            project=project_name,
-            name=run_name,
-            config={
-                "model_name": config['model']['name'],
-                "batch_size": config['training']['batch_size'],
-                "learning_rate": config['training']['learning_rate'],
-                "num_epochs": config['training']['num_epochs'],
-                "dropout": config['model']['dropout'],
-                "dialect_loss_weight": config['loss']['dialect_weight'],
-                "seed": config['seed'],
-            }
-        )
-        logger.info(f"WandB project: {project_name}")
+        if wandb_enabled:
+            wandb.init(
+                project=project_name,
+                name=run_name,
+                config={
+                    "model_name": config['model']['name'],
+                    "batch_size": config['training']['batch_size'],
+                    "learning_rate": config['training']['learning_rate'],
+                    "num_epochs": config['training']['num_epochs'],
+                    "dropout": config['model']['dropout'],
+                    "dialect_loss_weight": config['loss']['dialect_weight'],
+                    "seed": config['seed'],
+                }
+            )
+            logger.info(f"WandB project: {project_name}")
     
     # Log config
     logger.info(f"Model: {config['model']['name']}")
