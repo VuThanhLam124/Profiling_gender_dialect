@@ -73,8 +73,9 @@ python infer.py --config configs/infer.yaml --audio path/to/audio.wav
 | | | Dialect | N/A | N/A | 90.61% |
 
 ### Model
-
+https://drive.google.com/drive/folders/1UCOVh9ut8jHmCFfMKgwM2_Mi_3rGhd94?usp=sharing
 
 ### Citation:
 https://github.com/TranNguyenNB/ViSpeech
+
 https://huggingface.co/datasets/nguyendv02/ViMD_Dataset
