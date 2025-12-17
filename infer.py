@@ -46,6 +46,37 @@ class SpeakerProfiler:
         self.is_whisper = 'whisper' in model_name or 'phowhisper' in model_name
         
         self._load_model()
+
+    def _load_audio_array(self, audio_path: str) -> np.ndarray:
+        # Whisper requires 30 seconds of audio
+        max_duration = 30 if self.is_whisper else self.max_duration
+        audio = load_and_preprocess_audio(
+            audio_path,
+            sampling_rate=self.sampling_rate,
+            max_duration=max_duration
+        )
+
+        # Whisper needs exactly 30 seconds - pad if necessary
+        if self.is_whisper:
+            target_len = self.sampling_rate * 30
+            if len(audio) < target_len:
+                audio = np.pad(audio, (0, target_len - len(audio)))
+
+        return audio
+
+    def _extract_batch_inputs(self, audio_batch):
+        inputs = self.feature_extractor(
+            audio_batch,
+            sampling_rate=self.sampling_rate,
+            return_tensors="pt",
+            padding=True
+        )
+
+        if self.is_whisper:
+            return inputs.input_features, None
+
+        attention_mask = getattr(inputs, "attention_mask", None)
+        return inputs.input_values, attention_mask
     
     def _load_model(self):
         """Load model and feature extractor"""
@@ -82,91 +113,96 @@ class SpeakerProfiler:
     
     def preprocess_audio(self, audio_path):
         """Load and preprocess audio file"""
-        # Whisper requires 30 seconds of audio
-        if self.is_whisper:
-            max_duration = 30
-        else:
-            max_duration = self.max_duration
-        
-        audio = load_and_preprocess_audio(
-            audio_path,
-            sampling_rate=self.sampling_rate,
-            max_duration=max_duration
-        )
-        
-        # Whisper needs exactly 30 seconds - pad if necessary
-        if self.is_whisper:
-            target_len = self.sampling_rate * 30
-            if len(audio) < target_len:
-                audio = np.pad(audio, (0, target_len - len(audio)))
-        
-        inputs = self.feature_extractor(
-            audio,
-            sampling_rate=self.sampling_rate,
-            return_tensors="pt",
-            padding=True
-        )
-        
-        # Whisper uses 'input_features', WavLM/HuBERT/Wav2Vec2 use 'input_values'
-        if self.is_whisper:
-            return inputs.input_features
-        else:
-            return inputs.input_values
+        audio = self._load_audio_array(audio_path)
+        input_tensor, _ = self._extract_batch_inputs(audio)
+        return input_tensor
     
     def predict(self, audio_path):
-        """Predict gender and dialect from audio file"""
-        input_values = self.preprocess_audio(audio_path)
-        input_values = input_values.to(self.device)
-        
-        with torch.no_grad():
-            outputs = self.model(input_values)
-            gender_logits = outputs['gender_logits']
-            dialect_logits = outputs['dialect_logits']
-        
-        gender_probs = torch.softmax(gender_logits, dim=-1).cpu().numpy()[0]
-        dialect_probs = torch.softmax(dialect_logits, dim=-1).cpu().numpy()[0]
-        
-        gender_pred = int(np.argmax(gender_probs))
-        dialect_pred = int(np.argmax(dialect_probs))
-        
-        result = {
-            'audio_path': str(audio_path),
-            'gender': {
-                'prediction': self.gender_labels[gender_pred],
-                'code': gender_pred,
-                'confidence': float(gender_probs[gender_pred]),
-                'probabilities': {
-                    self.gender_labels[0]: float(gender_probs[0]),
-                    self.gender_labels[1]: float(gender_probs[1])
-                }
-            },
-            'dialect': {
-                'prediction': self.dialect_labels[dialect_pred],
-                'code': dialect_pred,
-                'confidence': float(dialect_probs[dialect_pred]),
-                'probabilities': {
-                    self.dialect_labels[0]: float(dialect_probs[0]),
-                    self.dialect_labels[1]: float(dialect_probs[1]),
-                    self.dialect_labels[2]: float(dialect_probs[2])
-                }
-            }
-        }
-        
-        return result
+        """Predict gender and dialect from one audio file."""
+        return self.predict_batch([audio_path])[0]
     
     def predict_batch(self, audio_paths):
-        """Predict gender and dialect for multiple audio files"""
+        """Predict gender and dialect for multiple audio files (supports batching)."""
+        batch_size = int(self.config.get("inference", {}).get("batch_size", 1) or 1)
+        batch_size = max(1, batch_size)
+
+        def build_result(path, gender_probs, dialect_probs):
+            gender_pred = int(np.argmax(gender_probs))
+            dialect_pred = int(np.argmax(dialect_probs))
+            return {
+                'audio_path': str(path),
+                'gender': {
+                    'prediction': self.gender_labels[gender_pred],
+                    'code': gender_pred,
+                    'confidence': float(gender_probs[gender_pred]),
+                    'probabilities': {
+                        self.gender_labels[0]: float(gender_probs[0]),
+                        self.gender_labels[1]: float(gender_probs[1])
+                    }
+                },
+                'dialect': {
+                    'prediction': self.dialect_labels[dialect_pred],
+                    'code': dialect_pred,
+                    'confidence': float(dialect_probs[dialect_pred]),
+                    'probabilities': {
+                        self.dialect_labels[0]: float(dialect_probs[0]),
+                        self.dialect_labels[1]: float(dialect_probs[1]),
+                        self.dialect_labels[2]: float(dialect_probs[2])
+                    }
+                }
+            }
+
         results = []
-        for audio_path in audio_paths:
-            try:
-                result = self.predict(audio_path)
-                results.append(result)
-            except Exception as e:
-                self.logger.error(f"Error processing {audio_path}: {e}")
-                results.append({
-                    'audio_path': str(audio_path),
-                    'error': str(e)
-                })
+
+        for start in range(0, len(audio_paths), batch_size):
+            chunk = audio_paths[start:start + batch_size]
+            chunk_results = [None] * len(chunk)
+
+            ok_audio = []
+            ok_indices = []
+            for i, audio_path in enumerate(chunk):
+                try:
+                    ok_audio.append(self._load_audio_array(str(audio_path)))
+                    ok_indices.append(i)
+                except Exception as e:
+                    self.logger.error(f"Error processing {audio_path}: {e}")
+                    chunk_results[i] = {'audio_path': str(audio_path), 'error': str(e)}
+
+            if ok_indices:
+                try:
+                    input_tensor, attention_mask = self._extract_batch_inputs(ok_audio)
+                    input_tensor = input_tensor.to(self.device)
+                    if attention_mask is not None:
+                        attention_mask = attention_mask.to(self.device)
+
+                    with torch.no_grad():
+                        outputs = self.model(input_values=input_tensor, attention_mask=attention_mask)
+                        gender_logits = outputs['gender_logits']
+                        dialect_logits = outputs['dialect_logits']
+
+                    gender_probs_batch = torch.softmax(gender_logits, dim=-1).cpu().numpy()
+                    dialect_probs_batch = torch.softmax(dialect_logits, dim=-1).cpu().numpy()
+
+                    for j, idx in enumerate(ok_indices):
+                        chunk_results[idx] = build_result(chunk[idx], gender_probs_batch[j], dialect_probs_batch[j])
+                except RuntimeError as e:
+                    # Graceful fallback for CUDA OOM: process one-by-one for this chunk
+                    msg = str(e).lower()
+                    if "out of memory" in msg and batch_size > 1:
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        self.logger.warning("CUDA OOM during batched inference; retrying with batch_size=1 for this chunk.")
+                        for idx in ok_indices:
+                            try:
+                                one = self.predict_batch([chunk[idx]])
+                                chunk_results[idx] = one[0]
+                            except Exception as ex:
+                                chunk_results[idx] = {'audio_path': str(chunk[idx]), 'error': str(ex)}
+                    else:
+                        raise
+
+            results.extend(chunk_results)
+
         return results
 
 

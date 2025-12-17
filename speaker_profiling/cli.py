@@ -28,6 +28,7 @@ def infer_cli():
         help="Encoder name used to build the architecture (e.g. vinai/PhoWhisper-base).",
     )
     parser.add_argument("--device", type=str, default="cuda", help="'cuda' or 'cpu'.")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for inference.")
     parser.add_argument("--sampling_rate", type=int, default=16000)
     parser.add_argument("--max_duration", type=int, default=None, help="Seconds.")
     parser.add_argument("--audio", type=str, default=None, help="Path to a single audio file.")
@@ -53,7 +54,7 @@ def infer_cli():
             "max_duration": max_duration,
         },
         "inference": {
-            "batch_size": 1,
+            "batch_size": args.batch_size,
             "device": args.device,
         },
         "input": {

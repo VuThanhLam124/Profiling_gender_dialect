@@ -28,6 +28,7 @@ python infer.py --config configs/infer_pho_hf.yaml --audio path/to/audio.wav
 ```bash
 pip install vn-speaker-profiling
 vn-speaker-profiling-infer --audio path/to/audio.wav
+vn-speaker-profiling-infer --audio_dir path/to/folder --batch_size 8
 ```
 
 ### Publish to PyPI (maintainers)
