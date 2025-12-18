@@ -154,6 +154,7 @@ ENCODER_REGISTRY = {
     
     # Vietnamese Wav2Vec2 (VLSP2020)
     "nguyenvulebinh/wav2vec2-base-vi-vlsp2020": {"class": Wav2Vec2Model, "hidden_size": 768},
+    "phongdtd/wavLM-VLSP-vi-base": {"class": WavLMModel, "hidden_size": 768},
     
     # Whisper variants (encoder only)
     "openai/whisper-tiny": {"class": WhisperModel, "hidden_size": 384, "is_whisper": True},
