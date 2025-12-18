@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import librosa
 from transformers import Wav2Vec2FeatureExtractor, WhisperFeatureExtractor
 
 from src.models import MultiTaskSpeakerModel
@@ -26,6 +27,18 @@ from src.utils import (
     load_and_preprocess_audio
 )
 
+def _detect_head_hidden_dim(checkpoint_dir: str) -> int:
+    safetensors_path = os.path.join(checkpoint_dir, "model.safetensors")
+    if os.path.exists(safetensors_path):
+        try:
+            from safetensors.torch import safe_open
+            with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+                if "gender_head.0.weight" in f.keys():
+                    return int(f.get_tensor("gender_head.0.weight").shape[0])
+        except Exception:
+            pass
+    return 256
+
 
 class SpeakerProfiler:
     """Speaker Profiler for inference"""
@@ -37,6 +50,7 @@ class SpeakerProfiler:
         self.sampling_rate = config['audio']['sampling_rate']
         self.max_duration = config['audio']['max_duration']
         self.checkpoint_dir = resolve_checkpoint_dir(config['model']['checkpoint'])
+        self.preprocess_mode = (config.get("preprocess", {}) or {}).get("mode", "space_v2")
         
         self.gender_labels = config['labels']['gender']
         self.dialect_labels = config['labels']['dialect']
@@ -48,21 +62,34 @@ class SpeakerProfiler:
         self._load_model()
 
     def _load_audio_array(self, audio_path: str) -> np.ndarray:
-        # Whisper requires 30 seconds of audio
+        if self.preprocess_mode == "default":
+            max_duration = 30 if self.is_whisper else self.max_duration
+            audio = load_and_preprocess_audio(
+                audio_path,
+                sampling_rate=self.sampling_rate,
+                max_duration=max_duration
+            )
+
+            if self.is_whisper:
+                target_len = self.sampling_rate * 30
+                if len(audio) < target_len:
+                    audio = np.pad(audio, (0, target_len - len(audio)))
+
+            return audio
+
+        # space_v2: match HF Space v2 behavior
         max_duration = 30 if self.is_whisper else self.max_duration
-        audio = load_and_preprocess_audio(
-            audio_path,
-            sampling_rate=self.sampling_rate,
-            max_duration=max_duration
-        )
+        waveform, _ = librosa.load(audio_path, sr=self.sampling_rate, mono=True)
+        max_samples = int(max_duration * self.sampling_rate)
+        if len(waveform) > max_samples:
+            waveform = waveform[:max_samples]
 
-        # Whisper needs exactly 30 seconds - pad if necessary
         if self.is_whisper:
-            target_len = self.sampling_rate * 30
-            if len(audio) < target_len:
-                audio = np.pad(audio, (0, target_len - len(audio)))
+            whisper_length = self.sampling_rate * 30
+            if len(waveform) < whisper_length:
+                waveform = np.pad(waveform, (0, whisper_length - len(waveform)))
 
-        return audio
+        return waveform
 
     def _extract_batch_inputs(self, audio_batch):
         inputs = self.feature_extractor(
@@ -97,10 +124,11 @@ class SpeakerProfiler:
             )
         else:
             self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
-                self.checkpoint_dir
+                model_name
             )
-        
-        self.model = MultiTaskSpeakerModel(model_name)
+
+        head_hidden_dim = _detect_head_hidden_dim(self.checkpoint_dir)
+        self.model = MultiTaskSpeakerModel(model_name, head_hidden_dim=head_hidden_dim, freeze_encoder=True)
         self.model = load_model_checkpoint(
             self.model,
             self.checkpoint_dir,

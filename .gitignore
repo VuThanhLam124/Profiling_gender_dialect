@@ -109,3 +109,8 @@ temp/
 model/
 
 .env
+
+*.txt
+
+*.toml
+

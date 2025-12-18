@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vn-speaker-profiling"
-version = "0.1.2"
-description = "Vietnamese speaker profiling (gender/dialect) with PhoWhisper/WavLM-family encoders."
+version = "0.1.7"
+description = "Production of Vietnam Post: Vietnamese speaker profiling (gender/dialect) with PhoWhisper/WavLM-family encoders."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [

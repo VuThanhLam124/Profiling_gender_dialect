@@ -17,7 +17,7 @@ python eval.py --checkpoint output/best_model --config configs/eval.yaml --test_
 python infer.py --config configs/infer.yaml --audio path/to/audio.wav
 ```
 
-### Infer (Pho model on Hugging Face Hub)
+### Infer (PhoWhisper with HF Space v2 preprocessing)
 
 ```bash
 python infer.py --config configs/infer_pho_hf.yaml --audio path/to/audio.wav

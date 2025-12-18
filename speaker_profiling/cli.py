@@ -29,6 +29,13 @@ def infer_cli():
     )
     parser.add_argument("--device", type=str, default="cuda", help="'cuda' or 'cpu'.")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size for inference.")
+    parser.add_argument(
+        "--preprocess",
+        type=str,
+        default="space_v2",
+        choices=["space_v2", "default"],
+        help="Preprocessing mode (space_v2 matches HF Space v2).",
+    )
     parser.add_argument("--sampling_rate", type=int, default=16000)
     parser.add_argument("--max_duration", type=int, default=None, help="Seconds.")
     parser.add_argument("--audio", type=str, default=None, help="Path to a single audio file.")
@@ -56,6 +63,9 @@ def infer_cli():
         "inference": {
             "batch_size": args.batch_size,
             "device": args.device,
+        },
+        "preprocess": {
+            "mode": args.preprocess,
         },
         "input": {
             "audio_path": args.audio,

@@ -244,12 +244,14 @@ class AttentivePooling(nn.Module):
             attn_weights: Attention weights [B, T]
         """
         attn_weights = self.attention(x)  # [B, T, 1]
-        
-        if mask is not None:
+
+        # đoạn này code nâng cao: đảm bảo mô hình sẽ lờ đi các phần đệm
+        # thường là khoàng lặng, những khoảng đó sẽ bị gán 1 số âm rất lớn
+        if mask is not None: 
             mask = mask.unsqueeze(-1)
             attn_weights = attn_weights.masked_fill(mask == 0, -1e9)
         
-        attn_weights = F.softmax(attn_weights, dim=1)
+        attn_weights = F.softmax(attn_weights, dim=1) # chuyển về xác suất (softmax apply trên chiều thời gian dim=1 => biến tất cả điểm số thô thành 1 phân phối xác suất
         pooled = torch.sum(x * attn_weights, dim=1)
         
         return pooled, attn_weights.squeeze(-1)

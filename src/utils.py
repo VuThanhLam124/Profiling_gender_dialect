@@ -23,6 +23,8 @@ def resolve_checkpoint_dir(checkpoint: Union[str, Path]) -> str:
         - "hf:owner/repo" or "hf://owner/repo"
         - "owner/repo" (only if local path doesn't exist)
       Optional revision: "hf:owner/repo@rev"
+    - Hugging Face Hub Spaces via:
+        - "hf-space:owner/space#subdir" (optional "@rev")
     """
     checkpoint_str = str(checkpoint)
 
@@ -33,11 +35,21 @@ def resolve_checkpoint_dir(checkpoint: Union[str, Path]) -> str:
     # HF Hub reference
     repo_id = None
     revision = None
+    repo_type = "model"
+    subdir = None
 
-    if checkpoint_str.startswith("hf://"):
+    if checkpoint_str.startswith("hf-space://"):
+        repo_id = checkpoint_str[len("hf-space://") :]
+        repo_type = "space"
+    elif checkpoint_str.startswith("hf-space:"):
+        repo_id = checkpoint_str[len("hf-space:") :]
+        repo_type = "space"
+    elif checkpoint_str.startswith("hf://"):
         repo_id = checkpoint_str[len("hf://") :]
+        repo_type = "model"
     elif checkpoint_str.startswith("hf:"):
         repo_id = checkpoint_str[len("hf:") :]
+        repo_type = "model"
     else:
         # Fallback: treat as repo id if it looks like "owner/repo"
         parts = checkpoint_str.split("/")
@@ -50,6 +62,9 @@ def resolve_checkpoint_dir(checkpoint: Union[str, Path]) -> str:
             "Provide an existing directory path or an HF repo like 'hf:owner/repo'."
         )
 
+    if "#" in repo_id:
+        repo_id, subdir = repo_id.split("#", 1)
+
     if "@" in repo_id:
         repo_id, revision = repo_id.split("@", 1)
 
@@ -61,7 +76,11 @@ def resolve_checkpoint_dir(checkpoint: Union[str, Path]) -> str:
             "Install it with: pip install huggingface_hub"
         ) from e
 
-    local_dir = snapshot_download(repo_id, repo_type="model", revision=revision)
+    local_dir = snapshot_download(repo_id, repo_type=repo_type, revision=revision)
+    if subdir:
+        local_dir = os.path.join(local_dir, subdir)
+    if not os.path.exists(local_dir):
+        raise FileNotFoundError(f"Resolved checkpoint directory does not exist: {local_dir}")
     return local_dir
 
 
