@@ -12,7 +12,7 @@ def _default_max_duration(encoder_name: str) -> int:
         return 30
     return 5
 
-
+ 
 def infer_cli():
     parser = argparse.ArgumentParser(description="Vietnamese Speaker Profiling (Inference)")
     parser.add_argument(

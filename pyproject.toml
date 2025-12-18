@@ -39,4 +39,4 @@ vn-speaker-profiling-infer = "speaker_profiling.cli:infer_cli"
 
 [tool.setuptools]
 packages = ["src", "speaker_profiling"]
-py-modules = ["infer"]
+py-modules = ["infer"] 
