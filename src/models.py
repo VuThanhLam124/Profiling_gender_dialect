@@ -2,6 +2,7 @@
 Model Architecture for Speaker Profiling
 Supports multiple encoders: WavLM, HuBERT, Wav2Vec2, Whisper, ECAPA-TDNN
 Architecture: Encoder + Attentive Pooling + LayerNorm + Classification Heads
+To understand the architecture, read https://github.com/VuThanhLam124/Profiling_gender_dialect/blob/main/ARCHITECTURE.md
 """
 
 import logging
@@ -16,7 +17,7 @@ from transformers import (
     AutoConfig
 )
 
-# SpeechBrain ECAPA-TDNN support - lazy import to avoid torchaudio issues
+# SpeechBrain ECAPA-TDNN lazy import, nói chung là con ECAPA-TDNN này không ăn thua trong task phân biệt bắc/trung/nam nhưng mạnh trong bài phân biệt giới tính, nma ko quá vượt trội
 SPEECHBRAIN_AVAILABLE = None  # Will be set on first use
 EncoderClassifier = None  # Will be imported lazily
 
@@ -190,8 +191,6 @@ def get_encoder_info(model_name: str) -> dict:
         return ENCODER_REGISTRY[model_name]
     
     # Check for ECAPA-TDNN / SpeechBrain models
-    # Note: We don't check SPEECHBRAIN_AVAILABLE here - the actual import
-    # will happen lazily in ECAPATDNNEncoder.__init__() when the model is used
     if 'ecapa' in model_name.lower() or 'speechbrain' in model_name.lower():
         hidden_size = 512 if 'xvect' in model_name.lower() else 192
         return {"class": ECAPATDNNEncoder, "hidden_size": hidden_size, "is_ecapa": True}
@@ -219,7 +218,7 @@ def get_encoder_info(model_name: str) -> dict:
 
 class AttentivePooling(nn.Module):
     """
-    Attention-based pooling for temporal aggregation
+    Attention-based pooling for temporal aggregation, the most advanced technique in this codebase.
     
     Takes sequence of hidden states and produces a single vector
     by computing attention weights and performing weighted sum.
@@ -280,7 +279,8 @@ class MultiTaskSpeakerModel(nn.Module):
         - WavLM: microsoft/wavlm-base-plus, microsoft/wavlm-large
         - HuBERT: facebook/hubert-base-ls960, facebook/hubert-large-ls960-ft
         - Wav2Vec2: facebook/wav2vec2-base, facebook/wav2vec2-large-960h
-        - Whisper: openai/whisper-base, openai/whisper-small, openai/whisper-medium
+        - Whisper: openai/whisper-base, openai/whisper-small, openai/whisper-medium, vinai/PhoWhisper-small, etc.
+        - Vietnamese Wav2Vec2: nguyenvulebinh/wav2vec2-base-vi-vlsp2020
         - ECAPA-TDNN: speechbrain/spkrec-ecapa-voxceleb (192-dim embeddings)
     
     Args:
