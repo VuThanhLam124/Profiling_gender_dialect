@@ -114,3 +114,6 @@ model/
 
 *.toml
 
+speaker_profiling/
+
+pyproject.toml
