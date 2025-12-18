@@ -36,14 +36,6 @@ vn-speaker-profiling-infer --audio path/to/audio.wav
 vn-speaker-profiling-infer --audio_dir path/to/folder --batch_size 8
 ```
 
-### Publish to PyPI (maintainers)
-
-```bash
-python -m pip install -U build twine
-python -m build
-python -m twine upload dist/*
-```
-
 ### Datasets:
 
 - [ViMD Dataset](https://huggingface.co/datasets/nguyendv02/ViMD_Dataset)
