@@ -1,5 +1,10 @@
 # Vietnamese Speaker Profiling
 
+## About this Repo:
+This repository is production of Vietnam Post (Tổng công ty Bưu điện Việt Nam) voice team for speaker profiling task, including gender and dialect classification. The model is built upon pre-trained speech models such as WavLM, HuBERT, Wav2Vec2, Whisper, and ECAPA-TDNN.
+
+We have pypi version for easy inference. Check it in: [vn-speaker-profiling](https://pypi.org/project/vn-speaker-profiling/)
+
 ### Finetune
 
 ```bash
