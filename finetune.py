@@ -645,9 +645,15 @@ def main(config_path):
     # Log config
     logger.info(f"Model: {config['model']['name']}")
     logger.info(f"Batch Size: {config['training']['batch_size']}")
+    gradient_accumulation_steps = int(config['training'].get('gradient_accumulation_steps', 1))
+    if gradient_accumulation_steps < 1:
+        raise ValueError("training.gradient_accumulation_steps must be >= 1")
+    logger.info(f"Gradient Accumulation: {gradient_accumulation_steps}")
     logger.info(f"Learning Rate: {config['training']['learning_rate']}")
     logger.info(f"Epochs: {config['training']['num_epochs']}")
     logger.info(f"Dialect Loss Weight: {config['loss']['dialect_weight']}x")
+    effective_batch = config['training']['batch_size'] * gradient_accumulation_steps
+    logger.info(f"Effective Batch Size (per device): {effective_batch}")
     logger.info("-" * 60)
     
     # Load feature extractor (auto-detect based on model type)
@@ -730,6 +736,7 @@ def main(config_path):
         learning_rate=config['training']['learning_rate'],
         per_device_train_batch_size=config['training']['batch_size'],
         per_device_eval_batch_size=config['training']['batch_size'],
+        gradient_accumulation_steps=gradient_accumulation_steps,
         num_train_epochs=config['training']['num_epochs'],
         weight_decay=config['training']['weight_decay'],
         warmup_ratio=config['training']['warmup_ratio'],
@@ -759,6 +766,19 @@ def main(config_path):
     callbacks = [early_stopping]
     if wandb_enabled:
         callbacks.append(WandbCallback())
+
+    resume_from_checkpoint = config['training'].get('resume_from_checkpoint', None)
+    if isinstance(resume_from_checkpoint, str):
+        resume_from_checkpoint = resume_from_checkpoint.strip() or None
+        if resume_from_checkpoint and not os.path.exists(resume_from_checkpoint):
+            raise FileNotFoundError(
+                f"resume_from_checkpoint not found: {resume_from_checkpoint}"
+            )
+
+    if resume_from_checkpoint is True:
+        logger.info("Resume from checkpoint enabled: using latest checkpoint in output_dir")
+    elif isinstance(resume_from_checkpoint, str):
+        logger.info(f"Resuming training from checkpoint: {resume_from_checkpoint}")
     
     try:
         # Trainer
@@ -774,7 +794,7 @@ def main(config_path):
         # Train
         logger.info("Starting training...")
         logger.info(f"Steps per epoch: ~{len(train_dataset) // config['training']['batch_size']}")
-        trainer.train()
+        trainer.train(resume_from_checkpoint=resume_from_checkpoint)
         
         # Save best model
         output_dir = os.path.join(config['output']['dir'], 'best_model')
