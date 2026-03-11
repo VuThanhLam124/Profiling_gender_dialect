@@ -9,6 +9,8 @@ We have pypi version for easy inference. Check it in: [vn-speaker-profiling](htt
 
 ```bash
 python finetune.py --config configs/finetune.yaml
+python finetune.py --config configs/finetune_unified.yaml (với 3 dataset ViMD + LSVSC + ViSEC)
+
 ```
 
 `data.source` supports:
