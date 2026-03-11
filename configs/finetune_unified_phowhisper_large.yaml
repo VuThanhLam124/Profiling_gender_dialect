@@ -1,27 +1,35 @@
-# Finetune configuration for unified multi-source training
-# Sources: ViMD + LSVSC + ViSEC
+# Unified finetune config for PhoWhisper-large on a single RTX 3090 24GB.
 #
-# If you have internet access, the Hugging Face dataset IDs below work directly.
-# If you run on Kaggle/server without internet, replace each `path` with the local mounted dataset path.
+# Important:
+# - This config uses PhoWhisper-large as the encoder backbone.
+# - With the current codebase, full end-to-end finetuning of PhoWhisper-large
+#   on 24GB VRAM is not a safe default because optimizer state + gradients are too large.
+# - Therefore this config freezes the encoder and trains the classification heads only.
+# - If you want true full finetuning for PhoWhisper-large, the repo should be upgraded
+#   with LoRA/PEFT or DeepSpeed/FSDP first.
+#
+# PhoWhisper-large source:
+# https://huggingface.co/vinai/PhoWhisper-large
 
 model:
-  name: "microsoft/wavlm-base-plus"
+  name: "vinai/PhoWhisper-large"
   num_genders: 2
   num_dialects: 3
-  dropout: 0.1
-  head_hidden_dim: 256
-  freeze_encoder: false
+  dropout: 0.15
+  head_hidden_dim: 512
+  freeze_encoder: true
 
 audio:
   sampling_rate: 16000
+  # For Whisper/PhoWhisper in this repo, audio is internally padded/truncated to 30s.
   max_duration: 5
 
 training:
-  batch_size: 8
-  gradient_accumulation_steps: 4
-  learning_rate: 3e-5
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 1e-4
   num_epochs: 10
-  warmup_ratio: 0.1
+  warmup_ratio: 0.08
   weight_decay: 0.01
   gradient_clip: 0.5
   lr_scheduler: "cosine"
@@ -31,16 +39,16 @@ training:
 
 augmentation:
   enabled: true
-  prob: 0.8
+  prob: 0.75
 
 loss:
-  dialect_weight: 3.0
+  dialect_weight: 4.0
 
 wandb:
   enabled: false
   api_key: null
   project: "speaker-profiling-unified"
-  run_name: "wavlm-base-plus-unified"
+  run_name: "phowhisper-large-frozen-unified"
 
 data:
   source: "unified"
@@ -51,8 +59,6 @@ data:
       - lsvsc
       - visec
 
-    # concat: plain concatenation
-    # balanced_concat: oversample smaller sources to approximate sampling_probs
     train_merge_strategy: "balanced_concat"
 
     sampling_probs:
@@ -80,7 +86,7 @@ data:
       split_seed: 42
 
 output:
-  dir: "output/unified-wavlm-base-plus"
+  dir: "output/unified-phowhisper-large-frozen"
   save_total_limit: 2
   metric_for_best_model: "dialect_acc"
 
