@@ -1,0 +1,36 @@
+# Inference Configuration (Pho model hosted on Hugging Face Hub)
+
+model:
+  # Supports: hf:owner/repo (download + cache) or a local directory path
+  checkpoint: "hf:Thanh-Lam/profiling-gender-dialect-pho"
+  name: "vinai/PhoWhisper-base"
+  head_hidden_dim: 256
+
+preprocess:
+  mode: "space_v2"  # match HF Space v2 preprocessing
+
+audio:
+  sampling_rate: 16000
+  max_duration: 30  # Whisper/PhoWhisper expects 30s inputs
+
+inference:
+  batch_size: 1
+  device: "cuda"
+
+input:
+  audio_path: null
+  audio_dir: null
+
+output:
+  dir: "output/predictions"
+  save_results: true
+  format: "json"
+
+labels:
+  gender:
+    0: "Female"
+    1: "Male"
+  dialect:
+    0: "North"
+    1: "Central"
+    2: "South"

@@ -41,9 +41,11 @@ except ImportError:
     WANDB_AVAILABLE = False
 
 try:
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
     HF_DATASETS_AVAILABLE = True
 except ImportError:
+    Audio = None
+    load_dataset = None
     HF_DATASETS_AVAILABLE = False
 
 try:
@@ -62,6 +64,32 @@ from src.utils import (
     count_parameters,
     format_number
 )
+
+
+def disable_hf_audio_decoding(dataset_dict, logger):
+    """
+    Turn off automatic Hugging Face Audio decoding.
+
+    This avoids hard dependency on torchcodec and lets ViMDDataset load
+    audio manually from path/bytes/array.
+    """
+    if not HF_DATASETS_AVAILABLE or Audio is None:
+        return dataset_dict
+
+    for split_name, split in dataset_dict.items():
+        features = getattr(split, "features", None) or {}
+        for column_name, feature in features.items():
+            if isinstance(feature, Audio) and getattr(feature, "decode", False):
+                dataset_dict[split_name] = split.cast_column(
+                    column_name,
+                    Audio(sampling_rate=getattr(feature, "sampling_rate", None), decode=False),
+                )
+                logger.info(
+                    f"Disabled Hugging Face audio decoding for split='{split_name}', column='{column_name}'"
+                )
+                split = dataset_dict[split_name]
+
+    return dataset_dict
 
 
 class AudioAugmentation:
@@ -226,6 +254,7 @@ class ViMDDataset(Dataset):
         self.max_length = int(self.sampling_rate * config['audio']['max_duration'])
         self.is_training = is_training
         self.logger = get_logger()
+        self._getitem_failures = 0
         
         # Check if this is a Whisper/PhoWhisper model (uses input_features instead of input_values)
         model_name = config.get('model', {}).get('name', '').lower()
@@ -344,7 +373,7 @@ class ViMDDataset(Dataset):
                 audio = np.pad(audio, (0, target_length - len(audio)))
             else:
                 if self.is_training:
-                    start = np.random.randint(0, max(1, len(audio) - target_length))
+                    start = np.random.randint(0, max(1, len(audio) - target_length + 1))
                 else:
                     start = max(0, (len(audio) - target_length) // 2)
                 audio = audio[start:start + target_length]
@@ -396,6 +425,9 @@ class ViMDDataset(Dataset):
             }
             
         except Exception as e:
+            if self._getitem_failures < 5:
+                self.logger.warning(f"Falling back to dummy HF sample at idx={idx}: {e}")
+            self._getitem_failures += 1
             # Return dummy data to prevent crash
             # Use correct length for Whisper (30s) vs other models
             target_len = self.whisper_length if self.is_whisper else self.max_length
@@ -626,6 +658,7 @@ def load_vimd_data(config, logger):
     logger.info(f"Loading ViMD dataset from {vimd_path}...")
     
     ds = load_dataset(vimd_path, keep_in_memory=False)
+    ds = disable_hf_audio_decoding(ds, logger)
     
     # Check available splits
     available_splits = list(ds.keys())

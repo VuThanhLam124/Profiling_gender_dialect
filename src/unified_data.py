@@ -22,8 +22,9 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 
 try:
-    from datasets import concatenate_datasets, load_dataset
+    from datasets import Audio, concatenate_datasets, load_dataset
 except ImportError:  # pragma: no cover - handled at runtime by caller
+    Audio = None
     concatenate_datasets = None
     load_dataset = None
 
@@ -134,13 +135,21 @@ def load_unified_data(config, logger):
 def _get_enabled_sources(unified_cfg) -> List[str]:
     explicit = unified_cfg.get("enabled_sources")
     if explicit:
-        return [str(source).strip().lower() for source in explicit if str(source).strip()]
+        enabled_sources = [str(source).strip().lower() for source in explicit if str(source).strip()]
+    else:
+        enabled_sources = []
+        for source_name in SUPPORTED_UNIFIED_SOURCES:
+            source_cfg = unified_cfg.get(source_name, {})
+            if bool(source_cfg.get("enabled", True)):
+                enabled_sources.append(source_name)
 
-    enabled_sources = []
-    for source_name in SUPPORTED_UNIFIED_SOURCES:
-        source_cfg = unified_cfg.get(source_name, {})
-        if bool(source_cfg.get("enabled", True)):
-            enabled_sources.append(source_name)
+    enabled_sources = list(dict.fromkeys(enabled_sources))
+    unknown_sources = [source for source in enabled_sources if source not in SUPPORTED_UNIFIED_SOURCES]
+    if unknown_sources:
+        raise ValueError(
+            f"Unsupported unified sources: {unknown_sources}. "
+            f"Supported: {list(SUPPORTED_UNIFIED_SOURCES)}"
+        )
     return enabled_sources
 
 
@@ -156,7 +165,29 @@ def _load_single_source(source_name: str, config, unified_cfg, logger):
 
 def _load_source_dataset(dataset_path: str, logger, source_name: str):
     logger.info(f"Loading source '{source_name}' from: {dataset_path}")
-    return load_dataset(dataset_path, keep_in_memory=False)
+    dataset_dict = load_dataset(dataset_path, keep_in_memory=False)
+    return _disable_audio_decoding(dataset_dict, logger, source_name)
+
+
+def _disable_audio_decoding(dataset_dict, logger, source_name: str):
+    """Disable automatic Audio decoding so item access does not require torchcodec."""
+    if Audio is None:
+        return dataset_dict
+
+    for split_name, split in dataset_dict.items():
+        features = getattr(split, "features", None) or {}
+        for column_name, feature in features.items():
+            if isinstance(feature, Audio) and getattr(feature, "decode", False):
+                dataset_dict[split_name] = split.cast_column(
+                    column_name,
+                    Audio(sampling_rate=getattr(feature, "sampling_rate", None), decode=False),
+                )
+                logger.info(
+                    f"Disabled HF audio decoding for source='{source_name}', split='{split_name}', column='{column_name}'"
+                )
+                split = dataset_dict[split_name]
+
+    return dataset_dict
 
 
 def _load_vimd_source(config, unified_cfg, logger):
@@ -295,38 +326,57 @@ def _normalize_split(dataset, source_name: str, config, unified_cfg):
     if source_name == "visec" and "path" in dataset.column_names and "audio" not in dataset.column_names:
         dataset = dataset.rename_column("path", "audio")
 
+    if "audio" not in dataset.column_names:
+        raise ValueError(f"Source '{source_name}' is missing required 'audio' column after normalization.")
+
     labels_gender = config["labels"]["gender"]
     lsvsc_map = _get_lsvsc_dialect_map(unified_cfg)
+    num_rows = len(dataset)
+    raw_gender = dataset["gender"] if "gender" in dataset.column_names else [None] * num_rows
+    raw_region = dataset["region"] if "region" in dataset.column_names else [None] * num_rows
+    raw_dialect = dataset["dialect"] if "dialect" in dataset.column_names else [None] * num_rows
+    raw_accent = dataset["accent"] if "accent" in dataset.column_names else [None] * num_rows
+    raw_speaker_id = dataset["speaker_id"] if "speaker_id" in dataset.column_names else [None] * num_rows
+    raw_speaker_id_vimd = dataset["speakerID"] if "speakerID" in dataset.column_names else [None] * num_rows
 
-    def mapper(example):
+    valid_indices = []
+    gender_ids = []
+    region_values = []
+    speaker_ids = []
+    source_values = []
+
+    for idx in range(num_rows):
+        example = {
+            "gender": raw_gender[idx],
+            "region": raw_region[idx],
+            "dialect": raw_dialect[idx],
+            "accent": raw_accent[idx],
+            "speaker_id": raw_speaker_id[idx],
+            "speakerID": raw_speaker_id_vimd[idx],
+        }
         gender_id = _map_gender_to_label(example.get("gender"), source_name, labels_gender)
         region = _map_region_to_coarse(example, source_name, lsvsc_map)
-        speaker_id = _extract_speaker_id(example, source_name)
-        return {
-            "gender": gender_id,
-            "region": region,
-            "source_speaker_id": speaker_id,
-            "source": source_name,
-        }
+        if gender_id is None or region is None:
+            continue
 
-    dataset = dataset.map(
-        mapper,
-        desc=f"Normalize {source_name} labels",
-    )
+        valid_indices.append(idx)
+        gender_ids.append(gender_id)
+        region_values.append(region)
+        speaker_ids.append(_extract_speaker_id(example, source_name))
+        source_values.append(source_name)
 
-    dataset = dataset.filter(
-        lambda example: example["gender"] is not None and example["region"] is not None,
-        desc=f"Filter invalid {source_name} labels",
-    )
+    if not valid_indices:
+        raise ValueError(f"Source '{source_name}' has no valid samples after label normalization.")
 
-    keep_columns = [
-        column
-        for column in ["audio", "gender", "region", "source_speaker_id", "source"]
-        if column in dataset.column_names
-    ]
-    remove_columns = [column for column in dataset.column_names if column not in keep_columns]
+    dataset = dataset.select(valid_indices)
+    remove_columns = [column for column in dataset.column_names if column != "audio"]
     if remove_columns:
         dataset = dataset.remove_columns(remove_columns)
+
+    dataset = dataset.add_column("gender", gender_ids)
+    dataset = dataset.add_column("region", region_values)
+    dataset = dataset.add_column("source_speaker_id", speaker_ids)
+    dataset = dataset.add_column("source", source_values)
 
     return dataset
 
@@ -358,9 +408,9 @@ def _canonical_gender(raw_gender, source_name: str) -> str | None:
 
     if source_name == "vimd":
         if raw_gender in {0, "0"}:
-            return "Female"
-        if raw_gender in {1, "1"}:
             return "Male"
+        if raw_gender in {1, "1"}:
+            return "Female"
 
     value = str(raw_gender).strip().lower()
     if value in {"male", "m"}:
@@ -427,7 +477,13 @@ def _resolve_sampling_probs(unified_cfg, enabled_sources: List[str]) -> Dict[str
 
     raw_probs = {}
     for source in enabled_sources:
-        raw_probs[source] = float(probs_cfg.get(source, 0.0))
+        value = float(probs_cfg.get(source, 0.0))
+        if value <= 0:
+            raise ValueError(
+                f"data.unified.sampling_probs.{source} must be > 0 for enabled source '{source}'. "
+                "Set a positive probability or disable the source."
+            )
+        raw_probs[source] = value
 
     total = sum(raw_probs.values())
     if total <= 0:

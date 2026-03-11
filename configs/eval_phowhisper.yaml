@@ -1,0 +1,55 @@
+# Evaluation Configuration for PhoWhisper
+# Architecture: PhoWhisper Encoder + Attentive Pooling + LayerNorm
+
+# Model
+model:
+  checkpoint: "/kaggle/working/output_vimd/best_model"
+  name: "vinai/PhoWhisper-base"
+  head_hidden_dim: 256
+
+# Audio Processing
+audio:
+  sampling_rate: 16000
+  max_duration: 30  # Whisper requires 30 seconds
+
+# Evaluation
+evaluation:
+  batch_size: 8  # Smaller batch for Whisper (more memory)
+  dataloader_num_workers: 2
+
+# Data Paths
+data:
+  # === ViSpeech (CSV format) ===
+  clean_test_meta: "/kaggle/input/vispeech/metadata/clean_testset.csv"
+  clean_test_audio: "/kaggle/input/vispeech/clean_testset"
+  noisy_test_meta: "/kaggle/input/vispeech/metadata/noisy_testset.csv"
+  noisy_test_audio: "/kaggle/input/vispeech/noisy_testset"
+  
+  # === ViMD (HuggingFace format) ===
+  vimd_path: "/kaggle/input/vimd-dataset"
+
+# Output
+output:
+  dir: "/kaggle/working/output_vimd/evaluation"
+  save_predictions: true
+  save_confusion_matrix: true
+
+# Label Mappings
+labels:
+  gender:
+    Male: 0
+    Female: 1
+    0: 0
+    1: 1
+  dialect:
+    North: 0
+    Central: 1
+    South: 2
+  region_to_dialect:
+    North: 0
+    Central: 1
+    South: 2
+
+# Inference
+inference:
+  device: "cuda"
