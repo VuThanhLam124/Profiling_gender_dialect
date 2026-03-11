@@ -70,9 +70,6 @@ venv.bak/
 Thumbs.db
 
 # Project specific
-# Config files (contain local paths)
-configs/*.yaml
-!configs/*.yaml.example
 
 # Data
 ViSpeech/

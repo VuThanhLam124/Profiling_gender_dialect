@@ -1,0 +1,106 @@
+# Finetune configuration for unified multi-source training
+# Sources: ViMD + LSVSC + ViSEC
+#
+# If you have internet access, the Hugging Face dataset IDs below work directly.
+# If you run on Kaggle/server without internet, replace each `path` with the local mounted dataset path.
+
+model:
+  name: "microsoft/wavlm-base-plus"
+  num_genders: 2
+  num_dialects: 3
+  dropout: 0.1
+  head_hidden_dim: 256
+  freeze_encoder: false
+
+audio:
+  sampling_rate: 16000
+  max_duration: 5
+
+training:
+  batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 3e-5
+  num_epochs: 12
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  gradient_clip: 0.5
+  lr_scheduler: "cosine"
+  fp16: true
+  dataloader_num_workers: 2
+  resume_from_checkpoint: null
+
+augmentation:
+  enabled: true
+  prob: 0.8
+
+loss:
+  dialect_weight: 3.0
+
+wandb:
+  enabled: false
+  api_key: null
+  project: "speaker-profiling-unified"
+  run_name: "wavlm-base-plus-unified"
+
+data:
+  source: "unified"
+
+  unified:
+    enabled_sources:
+      - vimd
+      - lsvsc
+      - visec
+
+    # concat: plain concatenation
+    # balanced_concat: oversample smaller sources to approximate sampling_probs
+    train_merge_strategy: "balanced_concat"
+
+    sampling_probs:
+      vimd: 0.4
+      lsvsc: 0.4
+      visec: 0.2
+
+    vimd:
+      enabled: true
+      path: "nguyendv02/ViMD_Dataset"
+
+    lsvsc:
+      enabled: true
+      path: "doof-ferb/LSVSC"
+      dialect_map:
+        northern dialect: North
+        central dialect: Central
+        southern dialect: South
+
+    visec:
+      enabled: true
+      path: "hustep-lab/ViSEC"
+      val_split: 0.1
+      test_split: 0.1
+      split_seed: 42
+
+output:
+  dir: "output/unified-wavlm-base-plus"
+  save_total_limit: 2
+  metric_for_best_model: "dialect_acc"
+
+early_stopping:
+  patience: 3
+  threshold: 0.001
+
+labels:
+  gender:
+    Male: 0
+    Female: 1
+    0: 0
+    1: 1
+  dialect:
+    North: 0
+    Central: 1
+    South: 2
+  region_to_dialect:
+    North: 0
+    Central: 1
+    South: 2
+
+seed: 42
