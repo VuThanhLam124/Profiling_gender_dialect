@@ -22,7 +22,6 @@ import pandas as pd
 import torch
 import librosa
 import soundfile as sf
-import wandb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 from transformers import (
@@ -33,6 +32,13 @@ from transformers import (
     TrainerCallback
 )
 from torch.utils.data import Dataset
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    wandb = None
+    WANDB_AVAILABLE = False
 
 try:
     from datasets import load_dataset
@@ -47,6 +53,7 @@ except ImportError:
     AUGMENTATION_AVAILABLE = False
 
 from src.models import MultiTaskSpeakerModelFromConfig
+from src.unified_data import load_unified_data
 from src.utils import (
     setup_logging,
     get_logger,
@@ -115,14 +122,18 @@ class ViSpeechDataset(Dataset):
             self.logger.info(f"Whisper mode: audio will be padded/truncated to 30 seconds ({self.whisper_length} samples)")
         
         # Data augmentation (only for training)
-        augment_prob = config.get('augmentation', {}).get('prob', 0.8)
-        if is_training and AUGMENTATION_AVAILABLE:
+        augmentation_cfg = config.get('augmentation', {})
+        augment_enabled = bool(augmentation_cfg.get('enabled', True))
+        augment_prob = augmentation_cfg.get('prob', 0.8)
+        if is_training and augment_enabled and AUGMENTATION_AVAILABLE:
             self.augmentation = AudioAugmentation(self.sampling_rate, augment_prob)
             self.logger.info(f"Augmentation ENABLED (prob={augment_prob})")
         else:
             self.augmentation = None
-            if is_training and not AUGMENTATION_AVAILABLE:
+            if is_training and augment_enabled and not AUGMENTATION_AVAILABLE:
                 self.logger.warning("audiomentations not installed. Augmentation DISABLED.")
+            elif is_training and not augment_enabled:
+                self.logger.info("Augmentation DISABLED by config")
             else:
                 self.logger.info("Augmentation DISABLED (validation/test)")
     
@@ -194,7 +205,10 @@ class ViSpeechDataset(Dataset):
 
 class ViMDDataset(Dataset):
     """
-    Dataset class for ViMD (HuggingFace format).
+    Dataset class for canonical HuggingFace audio datasets.
+    Originally built for ViMD, now also used for unified multi-source training
+    after each source is normalized to the same schema.
+
     Loads audio from HuggingFace datasets with path/bytes/array support.
     Handles both Whisper (input_features) and WavLM/HuBERT/Wav2Vec2 (input_values).
     """
@@ -232,14 +246,20 @@ class ViMDDataset(Dataset):
         })
         
         # Data augmentation (only for training)
-        augment_prob = config.get('augmentation', {}).get('prob', 0.8)
-        if is_training and AUGMENTATION_AVAILABLE:
+        augmentation_cfg = config.get('augmentation', {})
+        augment_enabled = bool(augmentation_cfg.get('enabled', True))
+        augment_prob = augmentation_cfg.get('prob', 0.8)
+        if is_training and augment_enabled and AUGMENTATION_AVAILABLE:
             self.augmentation = AudioAugmentation(self.sampling_rate, augment_prob)
             self.logger.info(f"Augmentation ENABLED (prob={augment_prob})")
         else:
             self.augmentation = None
-            if is_training and not AUGMENTATION_AVAILABLE:
+            if is_training and augment_enabled and not AUGMENTATION_AVAILABLE:
                 self.logger.warning("audiomentations not installed. Augmentation DISABLED.")
+            elif is_training and not augment_enabled:
+                self.logger.info("Augmentation DISABLED by config")
+            else:
+                self.logger.info("Augmentation DISABLED (validation/test)")
     
     def __len__(self):
         return len(self.dataset)
@@ -356,7 +376,7 @@ class ViMDDataset(Dataset):
             else:
                 input_tensor = inputs.input_values.squeeze(0)
             
-            # Map labels - ViMD uses 'gender' (int) and 'region' (string)
+            # Canonical HF schema uses 'gender' (int label) and 'region' (North/Central/South)
             gender_raw = item.get('gender', 0)
             region = item.get('region', 'North')
             
@@ -406,9 +426,11 @@ class MultiTaskTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         gender_labels = inputs.pop("gender_labels")
         dialect_labels = inputs.pop("dialect_labels")
+        attention_mask = inputs.get("attention_mask")
         
         outputs = model(
             input_values=inputs["input_values"],
+            attention_mask=attention_mask,
             gender_labels=gender_labels,
             dialect_labels=dialect_labels
         )
@@ -419,10 +441,12 @@ class MultiTaskTrainer(Trainer):
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         gender_labels = inputs.pop("gender_labels")
         dialect_labels = inputs.pop("dialect_labels")
+        attention_mask = inputs.get("attention_mask")
         
         with torch.no_grad():
             outputs = model(
                 input_values=inputs["input_values"],
+                attention_mask=attention_mask,
                 gender_labels=gender_labels,
                 dialect_labels=dialect_labels
             )
@@ -442,6 +466,8 @@ class WandbCallback(TrainerCallback):
         self.logger = get_logger()
     
     def on_log(self, args, state, control, logs=None, **kwargs):
+        if not WANDB_AVAILABLE:
+            return
         if logs is None or wandb.run is None:
             return
         
@@ -456,6 +482,8 @@ class WandbCallback(TrainerCallback):
             wandb.log(metrics_to_log, step=step)
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if not WANDB_AVAILABLE:
+            return
         if metrics is None or wandb.run is None:
             return
         
@@ -497,6 +525,12 @@ def load_and_split_data(config, logger):
     
     # Load metadata
     train_meta_path = config['data']['train_meta']
+    train_audio_dir = config['data']['train_audio']
+    if not os.path.exists(train_meta_path):
+        raise FileNotFoundError(f"train_meta not found: {train_meta_path}")
+    if not os.path.isdir(train_audio_dir):
+        raise FileNotFoundError(f"train_audio directory not found: {train_audio_dir}")
+
     logger.info(f"Loading metadata from {train_meta_path}...")
     
     train_df = pd.read_csv(train_meta_path)
@@ -507,7 +541,7 @@ def load_and_split_data(config, logger):
         'audio_name': ['audio_name', 'filename', 'file', 'path', 'audio_path'],
         'gender': ['gender', 'sex'],
         'dialect': ['dialect', 'accent', 'region'],
-        'speaker': ['speaker', 'speaker_id', 'spk_id', 'spk']
+        'speaker': ['speaker', 'speaker_id', 'spk_id', 'spk', 'speakerID']
     }
     
     detected_cols = {}
@@ -533,10 +567,34 @@ def load_and_split_data(config, logger):
     
     train_df['gender_label'] = train_df['gender'].map(gender_map)
     train_df['dialect_label'] = train_df['dialect'].map(dialect_map)
+
+    unmapped_gender = train_df['gender_label'].isna()
+    if unmapped_gender.any():
+        unknown_vals = sorted(train_df.loc[unmapped_gender, 'gender'].dropna().astype(str).unique())[:10]
+        raise ValueError(
+            "Found unmapped gender labels in metadata. "
+            f"Examples: {unknown_vals}. Update labels.gender in config."
+        )
+
+    unmapped_dialect = train_df['dialect_label'].isna()
+    if unmapped_dialect.any():
+        unknown_vals = sorted(train_df.loc[unmapped_dialect, 'dialect'].dropna().astype(str).unique())[:10]
+        raise ValueError(
+            "Found unmapped dialect labels in metadata. "
+            f"Examples: {unknown_vals}. Update labels.dialect in config."
+        )
+
+    if train_df['audio_name'].isna().any():
+        raise ValueError("Found empty audio_name values in metadata.")
     
     # Split by speaker to avoid data leakage
     val_split = config['data'].get('val_split', 0.15)
+    if not (0.0 < float(val_split) < 1.0):
+        raise ValueError(f"data.val_split must be in (0,1), got {val_split}")
+
     unique_speakers = train_df['speaker'].unique()
+    if len(unique_speakers) < 2:
+        raise ValueError("Need at least 2 unique speakers for train/val split.")
     
     train_speakers, val_speakers = train_test_split(
         unique_speakers,
@@ -607,13 +665,22 @@ def main(config_path):
     config = load_config(config_path)
     set_seed(config['seed'])
     
-    # Determine data source: vispeech (CSV) or vimd (HuggingFace)
+    # Determine data source: vispeech (CSV), vimd (HuggingFace), or unified (multi-source HuggingFace)
     data_source = config['data'].get('source', 'vispeech')
     logger.info(f"Data source: {data_source}")
     
     # Setup WandB
     wandb_config = config.get('wandb', {})
     wandb_enabled = wandb_config.get('enabled', True)
+    if wandb_enabled and not WANDB_AVAILABLE:
+        logger.warning("wandb not installed; disabling WandB logging.")
+        wandb_enabled = False
+
+    if data_source not in {'vispeech', 'vimd', 'unified'}:
+        raise ValueError(
+            f"Unsupported data.source: {data_source}. "
+            "Use 'vispeech', 'vimd', or 'unified'."
+        )
     
     if wandb_enabled:
         wandb_api_key = wandb_config.get('api_key') or os.environ.get("WANDB_API_KEY")
@@ -686,6 +753,23 @@ def main(config_path):
         
         val_dataset = ViMDDataset(
             hf_dataset=vimd_ds[val_key],
+            feature_extractor=feature_extractor,
+            config=config,
+            is_training=False
+        )
+    elif data_source == 'unified':
+        train_hf, val_hf = load_unified_data(config, logger)
+
+        logger.info("Creating unified datasets...")
+        train_dataset = ViMDDataset(
+            hf_dataset=train_hf,
+            feature_extractor=feature_extractor,
+            config=config,
+            is_training=True
+        )
+
+        val_dataset = ViMDDataset(
+            hf_dataset=val_hf,
             feature_extractor=feature_extractor,
             config=config,
             is_training=False

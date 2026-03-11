@@ -1,186 +1,121 @@
-# Finetune Configuration# Finetune Configuration
+# Finetune Configuration
+# Train full model from raw audio.
 
-# Full model finetuning from raw audio# Architecture: WavLM + Attentive Pooling + LayerNorm + Deeper Heads
-
-# Supports: ViSpeech (CSV) and ViMD (HuggingFace)# Uses pre-extracted features from prepare_data.py
-
-# Copy this file to finetune.yaml and update paths# Copy this file to finetune.yaml and update paths
-
-
-
-# Model# Model (for classification heads only - features are pre-extracted)
-
-model:model:
-
-  name: "microsoft/wavlm-base-plus"  name: "microsoft/wavlm-base-plus"  # Used for hidden_size reference
-
-  num_genders: 2  hidden_size: 768                   # WavLM base hidden dimension
-
-  num_dialects: 3  num_genders: 2
-
-  dropout: 0.1  num_dialects: 3
-
-  head_hidden_dim: 256  dropout: 0.1
-
+model:
+  name: "microsoft/wavlm-base-plus"
+  num_genders: 2
+  num_dialects: 3
+  dropout: 0.1
   head_hidden_dim: 256
 
-# Audio processing
+audio:
+  sampling_rate: 16000
+  max_duration: 5
 
-audio:# Training
-
-  sampling_rate: 16000training:
-
-  max_duration: 5  # seconds  batch_size: 32
-
+training:
+  batch_size: 32
+  gradient_accumulation_steps: 1
   learning_rate: 5e-5
+  num_epochs: 15
+  warmup_ratio: 0.125
+  weight_decay: 0.0125
+  gradient_clip: 0.5
+  lr_scheduler: "linear"
+  fp16: true
+  dataloader_num_workers: 4
+  resume_from_checkpoint: null
 
-# Training  num_epochs: 15
+augmentation:
+  enabled: true
+  prob: 0.8
 
-training:  warmup_ratio: 0.125
-
-  batch_size: 32  weight_decay: 0.0125
-
-  learning_rate: 5e-5  gradient_clip: 1.0
-
-  num_epochs: 15  lr_scheduler: "linear"
-
-  warmup_ratio: 0.125  fp16: true
-
-  weight_decay: 0.0125  dataloader_num_workers: 4
-
-  gradient_clip: 1.0
-
-  lr_scheduler: "linear"# Loss
-
-  fp16: trueloss:
-
-  dataloader_num_workers: 4  dialect_weight: 3.0
-
-
-
-# Data Augmentation# MLflow Configuration
-
-augmentation:mlflow:
-
-  enabled: true  enabled: true
-
-  prob: 0.8  tracking_uri: "mlruns"
-
-  experiment_name: "speaker-profiling"
-
-# Loss  run_name: null
-
-loss:  registered_model_name: null
-
+loss:
   dialect_weight: 3.0
 
-# Dataset paths
+wandb:
+  enabled: false
+  api_key: null
+  project: "speaker-profiling"
+  run_name: null
 
-# MLflow Configuration# ============================================================
+# source:
+#   - "vispeech" (CSV format)
+#   - "vimd" (single HuggingFace dataset)
+#   - "unified" (merge ViMD + LSVSC + ViSEC)
+data:
+  source: "vispeech"  # Options: vispeech, vimd, unified
 
-mlflow:# STEP 1: Update RAW DATASET PATHS to your local ViSpeech location
+  # ViSpeech
+  vispeech_root: "/path/to/ViSpeech"
+  train_meta: "/path/to/ViSpeech/metadata/trainset.csv"
+  train_audio: "/path/to/ViSpeech/trainset"
+  clean_test_meta: "/path/to/ViSpeech/metadata/clean_testset.csv"
+  clean_test_audio: "/path/to/ViSpeech/clean_testset"
+  noisy_test_meta: "/path/to/ViSpeech/metadata/noisy_testset.csv"
+  noisy_test_audio: "/path/to/ViSpeech/noisy_testset"
+  val_split: 0.15
 
-  enabled: true# STEP 2: Run prepare_data.py to extract features
+  # ViMD
+  vimd_path: "nguyendv02/ViMD_Dataset"
 
-  tracking_uri: "mlruns"# STEP 3: Features will be saved to train_dir/val_dir folders
+  # Unified multi-source training
+  unified:
+    # Optional explicit source list; leave empty to use all enabled sources below
+    enabled_sources: []
 
-  experiment_name: "speaker-profiling"# ============================================================
+    # concat: simply concatenate all train splits
+    # balanced_concat: oversample smaller sources to match sampling_probs per epoch
+    train_merge_strategy: "balanced_concat"
 
-  run_name: nulldata:
+    # Recommended starting point for cross-dataset robustness
+    sampling_probs:
+      vimd: 0.4
+      lsvsc: 0.4
+      visec: 0.2
 
-  registered_model_name: null  # === RAW DATASET PATHS (for prepare_data.py) ===
+    vimd:
+      enabled: true
+      path: "nguyendv02/ViMD_Dataset"
 
-  # Download ViSpeech: https://drive.google.com/file/d/1-BbOHf42o6eBje2WqQiiRKMtNxmZiRf9
+    lsvsc:
+      enabled: true
+      path: "doof-ferb/LSVSC"
+      # Only keep these 3 coarse dialects, then normalize to North/Central/South
+      dialect_map:
+        northern dialect: North
+        central dialect: Central
+        southern dialect: South
 
-# Dataset  # Update these paths to match your local dataset location
-
-# source: "vispeech" (CSV format) or "vimd" (HuggingFace format)  vispeech_root: "/path/to/ViSpeech"  # <-- UPDATE THIS
-
-data:  
-
-  source: "vispeech"  # Options: vispeech, vimd  # Training data
-
-    train_meta: "/path/to/ViSpeech/metadata/trainset.csv"      # <-- UPDATE
-
-  # === ViSpeech (CSV format) ===  train_audio: "/path/to/ViSpeech/trainset"                   # <-- UPDATE
-
-  vispeech_root: "/path/to/ViSpeech"  
-
-  train_meta: "/path/to/ViSpeech/metadata/trainset.csv"  # Test data
-
-  train_audio: "/path/to/ViSpeech/trainset"  clean_test_meta: "/path/to/ViSpeech/metadata/clean_testset.csv"
-
-  clean_test_meta: "/path/to/ViSpeech/metadata/clean_testset.csv"  clean_test_audio: "/path/to/ViSpeech/clean_testset"
-
-  clean_test_audio: "/path/to/ViSpeech/clean_testset"  noisy_test_meta: "/path/to/ViSpeech/metadata/noisy_testset.csv"
-
-  noisy_test_meta: "/path/to/ViSpeech/metadata/noisy_testset.csv"  noisy_test_audio: "/path/to/ViSpeech/noisy_testset"
-
-  noisy_test_audio: "/path/to/ViSpeech/noisy_testset"  
-
-  val_split: 0.15  # Validation split ratio (extracted from trainset)
-
-    val_split: 0.15
-
-  # === ViMD (HuggingFace format) ===  
-
-  vimd_path: "/path/to/vimd-dataset"  # === EXTRACTED FEATURES PATHS (for finetune.py) ===
-
-  # After running prepare_data.py, features will be saved here
-
-# Output  # These paths are relative to project root
-
-output:  train_dir: "datasets/ViSpeech/train"
-
-  dir: "output/speaker-profiling"  val_dir: "datasets/ViSpeech/val"
-
-  save_total_limit: 3
-
-  metric_for_best_model: "dialect_acc"# Output
+    visec:
+      enabled: true
+      path: "hustep-lab/ViSEC"
+      # ViSEC only has train split, so we create speaker-disjoint val/test splits
+      val_split: 0.1
+      test_split: 0.1
+      split_seed: 42
 
 output:
+  dir: "output/speaker-profiling"
+  save_total_limit: 3
+  metric_for_best_model: "dialect_acc"
 
-# Early Stopping  dir: "output/speaker-profiling"
-
-early_stopping:  save_total_limit: 3
-
-  patience: 3  metric_for_best_model: "dialect_acc"
-
+early_stopping:
+  patience: 3
   threshold: 0.0025
 
-# Early Stopping
-
-# Label Mappingsearly_stopping:
-
-labels:  patience: 3
-
-  gender:  threshold: 0.0025
-
+labels:
+  gender:
     Male: 0
-
-    Female: 1# Label Mappings (must match prepare_data.py)
-
-    0: 0labels:
-
-    1: 1  gender:
-
-  dialect:    Male: 0
-
-    North: 0    Female: 1
-
-    Central: 1  dialect:
-
-    South: 2    North: 0
-
-  region_to_dialect:    Central: 1
-
-    North: 0    South: 2
-
+    Female: 1
+    0: 0
+    1: 1
+  dialect:
+    North: 0
     Central: 1
+    South: 2
+  region_to_dialect:
+    North: 0
+    Central: 1
+    South: 2
 
-    South: 2# Reproducibility
-
-seed: 42
-
-# Reproducibility
 seed: 42

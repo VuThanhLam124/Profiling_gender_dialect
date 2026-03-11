@@ -10,6 +10,18 @@ We have pypi version for easy inference. Check it in: [vn-speaker-profiling](htt
 ```bash
 python finetune.py --config configs/finetune.yaml
 ```
+
+`data.source` supports:
+- `vispeech`: CSV metadata + local audio folders
+- `vimd`: single Hugging Face dataset
+- `unified`: merge ViMD + LSVSC + ViSEC in one training run
+
+For `unified`, LSVSC is filtered to only:
+- `northern dialect`
+- `central dialect`
+- `southern dialect`
+
+These are normalized to `North`, `Central`, `South` before training.
 ### Eval:
 
 ```bash

@@ -1,4 +1,5 @@
-# Model (for classification heads only - features are pre-extracted)
+# Finetune configuration
+# Train full model from raw audio.
 model:
   name: "microsoft/wavlm-base-plus"  # Used for hidden_size reference
   num_genders: 2
@@ -14,6 +15,7 @@ audio:
 # Training
 training:
   batch_size: 32
+  gradient_accumulation_steps: 1
   learning_rate: 5e-5
   num_epochs: 15
   warmup_ratio: 0.125
@@ -22,6 +24,7 @@ training:
   lr_scheduler: "linear"
   fp16: true
   dataloader_num_workers: 4
+  resume_from_checkpoint: null
 
 # Data Augmentation
 augmentation:
@@ -40,9 +43,12 @@ wandb:
   run_name: null
 
 # Dataset paths
-# source: "vispeech" (CSV format) or "vimd" (HuggingFace format)
+# source:
+#   - "vispeech" (CSV format)
+#   - "vimd" (single HuggingFace dataset)
+#   - "unified" (merge ViMD + LSVSC + ViSEC)
 data:
-  source: "vispeech"  # Options: vispeech, vimd
+  source: "vispeech"  # Options: vispeech, vimd, unified
   
   # === ViSpeech (CSV format) ===
   vispeech_root: "/home/ubuntu/DataScience/Voice_Pro_filing/vispeech_data/ViSpeech"
@@ -56,6 +62,34 @@ data:
   
   # === ViMD (HuggingFace format) ===
   vimd_path: "/kaggle/input/vimd-dataset"
+
+  # === Unified multi-source training ===
+  unified:
+    enabled_sources: []
+    train_merge_strategy: "balanced_concat"
+    sampling_probs:
+      vimd: 0.4
+      lsvsc: 0.4
+      visec: 0.2
+
+    vimd:
+      enabled: true
+      path: "nguyendv02/ViMD_Dataset"
+
+    lsvsc:
+      enabled: true
+      path: "doof-ferb/LSVSC"
+      dialect_map:
+        northern dialect: North
+        central dialect: Central
+        southern dialect: South
+
+    visec:
+      enabled: true
+      path: "hustep-lab/ViSEC"
+      val_split: 0.1
+      test_split: 0.1
+      split_seed: 42
 
 # Output
 output:
