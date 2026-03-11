@@ -15,6 +15,7 @@ Canonical columns after normalization:
 from __future__ import annotations
 
 import math
+import os
 from collections import Counter
 from typing import Dict, List, Tuple
 
@@ -163,51 +164,77 @@ def _load_single_source(source_name: str, config, unified_cfg, logger):
     raise ValueError(f"Unsupported unified source: {source_name}")
 
 
-def _load_source_dataset(dataset_path: str, logger, source_name: str):
-    logger.info(f"Loading source '{source_name}' from: {dataset_path}")
-    dataset_dict = load_dataset(dataset_path, keep_in_memory=False)
-    return _disable_audio_decoding(dataset_dict, logger, source_name)
+def _resolve_cache_dir(config, unified_cfg, source_name: str) -> str | None:
+    source_cfg = unified_cfg.get(source_name, {})
+    cache_dir = (
+        source_cfg.get("cache_dir")
+        or unified_cfg.get("cache_dir")
+        or config["data"].get("hf_cache_dir")
+    )
+    if cache_dir is None:
+        return None
+    cache_dir = str(cache_dir).strip()
+    return cache_dir or None
 
 
-def _disable_audio_decoding(dataset_dict, logger, source_name: str):
+def _load_source_split(dataset_path: str, split_name: str, logger, source_name: str, cache_dir: str | None = None):
+    logger.info(f"Loading source '{source_name}' split='{split_name}' from: {dataset_path}")
+    load_kwargs = {
+        "split": split_name,
+        "keep_in_memory": False,
+    }
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        load_kwargs["cache_dir"] = cache_dir
+        logger.info(f"Using Hugging Face cache dir for '{source_name}': {cache_dir}")
+
+    dataset = load_dataset(dataset_path, **load_kwargs)
+    return _disable_audio_decoding(dataset, logger, source_name, split_name)
+
+
+def _disable_audio_decoding(dataset_obj, logger, source_name: str, split_name: str | None = None):
     """Disable automatic Audio decoding so item access does not require torchcodec."""
     if Audio is None:
-        return dataset_dict
+        return dataset_obj
 
-    for split_name, split in dataset_dict.items():
+    if hasattr(dataset_obj, "items"):
+        split_items = list(dataset_obj.items())
+    else:
+        split_items = [(split_name or "unknown", dataset_obj)]
+
+    for current_split_name, split in split_items:
         features = getattr(split, "features", None) or {}
         for column_name, feature in features.items():
             if isinstance(feature, Audio) and getattr(feature, "decode", False):
-                dataset_dict[split_name] = split.cast_column(
+                updated_split = split.cast_column(
                     column_name,
                     Audio(sampling_rate=getattr(feature, "sampling_rate", None), decode=False),
                 )
+                if hasattr(dataset_obj, "items"):
+                    dataset_obj[current_split_name] = updated_split
+                else:
+                    dataset_obj = updated_split
                 logger.info(
-                    f"Disabled HF audio decoding for source='{source_name}', split='{split_name}', column='{column_name}'"
+                    f"Disabled HF audio decoding for source='{source_name}', split='{current_split_name}', column='{column_name}'"
                 )
-                split = dataset_dict[split_name]
+                split = updated_split
 
-    return dataset_dict
+    return dataset_obj
 
 
 def _load_vimd_source(config, unified_cfg, logger):
     dataset_path = str(unified_cfg.get("vimd", {}).get("path", config["data"].get("vimd_path", "nguyendv02/ViMD_Dataset")))
-    ds = _load_source_dataset(dataset_path, logger, "vimd")
+    cache_dir = _resolve_cache_dir(config, unified_cfg, "vimd")
 
-    splits = list(ds.keys())
-    train_key = "train"
-    val_key = "validation" if "validation" in splits else "valid" if "valid" in splits else None
-    if val_key is None:
-        raise ValueError("ViMD source requires a validation split named 'validation' or 'valid'.")
+    train_ds = _load_source_split(dataset_path, "train", logger, "vimd", cache_dir=cache_dir)
+    try:
+        val_ds = _load_source_split(dataset_path, "validation", logger, "vimd", cache_dir=cache_dir)
+    except Exception:
+        val_ds = _load_source_split(dataset_path, "valid", logger, "vimd", cache_dir=cache_dir)
 
-    train_ds = _normalize_split(
-        ds[train_key],
-        source_name="vimd",
-        config=config,
-        unified_cfg=unified_cfg,
-    )
+    train_ds = _normalize_split(train_ds, source_name="vimd", config=config, unified_cfg=unified_cfg)
     val_ds = _normalize_split(
-        ds[val_key],
+        val_ds,
         source_name="vimd",
         config=config,
         unified_cfg=unified_cfg,
@@ -217,14 +244,10 @@ def _load_vimd_source(config, unified_cfg, logger):
 
 def _load_lsvsc_source(config, unified_cfg, logger):
     dataset_path = str(unified_cfg.get("lsvsc", {}).get("path", "doof-ferb/LSVSC"))
-    ds = _load_source_dataset(dataset_path, logger, "lsvsc")
+    cache_dir = _resolve_cache_dir(config, unified_cfg, "lsvsc")
 
-    splits = list(ds.keys())
-    if "train" not in splits or "validation" not in splits:
-        raise ValueError("LSVSC source requires 'train' and 'validation' splits.")
-
-    raw_train = ds["train"]
-    raw_val = ds["validation"]
+    raw_train = _load_source_split(dataset_path, "train", logger, "lsvsc", cache_dir=cache_dir)
+    raw_val = _load_source_split(dataset_path, "validation", logger, "lsvsc", cache_dir=cache_dir)
     logger.info(f"LSVSC raw train={len(raw_train):,}, val={len(raw_val):,}")
 
     train_ds = _normalize_split(
@@ -244,11 +267,8 @@ def _load_lsvsc_source(config, unified_cfg, logger):
 
 def _load_visec_source(config, unified_cfg, logger):
     dataset_path = str(unified_cfg.get("visec", {}).get("path", "hustep-lab/ViSEC"))
-    ds = _load_source_dataset(dataset_path, logger, "visec")
-    if "train" not in ds:
-        raise ValueError("ViSEC source requires a 'train' split.")
-
-    base = ds["train"]
+    cache_dir = _resolve_cache_dir(config, unified_cfg, "visec")
+    base = _load_source_split(dataset_path, "train", logger, "visec", cache_dir=cache_dir)
     if "path" in base.column_names and "audio" not in base.column_names:
         base = base.rename_column("path", "audio")
 

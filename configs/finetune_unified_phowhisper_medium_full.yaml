@@ -56,6 +56,7 @@ wandb:
 
 data:
   source: "unified"
+  hf_cache_dir: null  # Optional: set to a path on a disk with enough free space
 
   unified:
     enabled_sources:
