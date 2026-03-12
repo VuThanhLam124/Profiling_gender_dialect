@@ -16,7 +16,8 @@
 # 2. or lower `gradient_accumulation_steps`
 
 model:
-  name: "vinai/PhoWhisper-medium"
+  # name: "vinai/PhoWhisper-medium"
+  name: "vinai/PhoWhisper-base"
   num_genders: 2
   num_dialects: 3
   dropout: 0.15
