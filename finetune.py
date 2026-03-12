@@ -55,7 +55,7 @@ except ImportError:
     AUGMENTATION_AVAILABLE = False
 
 from src.models import MultiTaskSpeakerModelFromConfig
-from src.unified_data import load_unified_data
+from src.unified_data import load_dataset_splits_from_path, load_unified_data
 from src.utils import (
     setup_logging,
     get_logger,
@@ -656,9 +656,13 @@ def load_vimd_data(config, logger):
     
     vimd_path = config['data']['vimd_path']
     logger.info(f"Loading ViMD dataset from {vimd_path}...")
-    
-    ds = load_dataset(vimd_path, keep_in_memory=False)
-    ds = disable_hf_audio_decoding(ds, logger)
+    cache_dir = config['data'].get('hf_cache_dir')
+    ds = load_dataset_splits_from_path(
+        dataset_path=vimd_path,
+        logger=logger,
+        source_name='vimd',
+        cache_dir=cache_dir,
+    )
     
     # Check available splits
     available_splits = list(ds.keys())
@@ -678,7 +682,7 @@ def load_vimd_data(config, logger):
         logger.info(f"ViMD Test: {len(ds['test']):,} samples")
     
     # Normalize split name to 'valid'
-    if val_key == 'validation':
+    if val_key == 'validation' and 'valid' not in ds:
         ds['valid'] = ds['validation']
     
     logger.info(f"Available columns: {ds['train'].column_names}")

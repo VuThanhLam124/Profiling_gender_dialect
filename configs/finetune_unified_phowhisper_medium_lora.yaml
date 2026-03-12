@@ -81,7 +81,7 @@ data:
 
     vimd:
       enabled: true
-      path: "nguyendv02/ViMD_Dataset"
+      path: "/kaggle/input/datasets/thanhlamdev/vimd-dataset"
 
     lsvsc:
       enabled: false

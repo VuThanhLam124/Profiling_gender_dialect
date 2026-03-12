@@ -14,20 +14,25 @@ Canonical columns after normalization:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from collections import Counter
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 from sklearn.model_selection import train_test_split
 
 try:
-    from datasets import Audio, concatenate_datasets, load_dataset
+    from datasets import Audio, Dataset, DatasetDict, concatenate_datasets, load_dataset, load_from_disk
 except ImportError:  # pragma: no cover - handled at runtime by caller
     Audio = None
+    Dataset = None
+    DatasetDict = None
     concatenate_datasets = None
     load_dataset = None
+    load_from_disk = None
 
 
 SUPPORTED_UNIFIED_SOURCES = ("vimd", "lsvsc", "visec")
@@ -186,6 +191,27 @@ def _resolve_cache_dir(config, unified_cfg, source_name: str) -> str | None:
 
 def _load_source_split(dataset_path: str, split_name: str, logger, source_name: str, cache_dir: str | None = None):
     logger.info(f"Loading source '{source_name}' split='{split_name}' from: {dataset_path}")
+
+    local_dataset = _try_load_local_dataset_artifact(dataset_path, logger, source_name)
+    if local_dataset is not None:
+        if hasattr(local_dataset, "keys"):
+            available_splits = list(local_dataset.keys())
+            if split_name not in local_dataset:
+                raise KeyError(
+                    f"Local dataset at '{dataset_path}' does not contain split '{split_name}'. "
+                    f"Available splits: {available_splits}"
+                )
+            logger.info(
+                f"Loaded local dataset artifact for '{source_name}' with splits: {available_splits}"
+            )
+            dataset = local_dataset[split_name]
+        else:
+            logger.info(
+                f"Loaded local single-split dataset artifact for '{source_name}' from: {dataset_path}"
+            )
+            dataset = local_dataset
+        return _disable_audio_decoding(dataset, logger, source_name, split_name)
+
     load_kwargs = {
         "split": split_name,
         "keep_in_memory": False,
@@ -197,6 +223,203 @@ def _load_source_split(dataset_path: str, split_name: str, logger, source_name: 
 
     dataset = load_dataset(dataset_path, **load_kwargs)
     return _disable_audio_decoding(dataset, logger, source_name, split_name)
+
+
+def load_dataset_splits_from_path(
+    dataset_path: str,
+    logger,
+    source_name: str,
+    cache_dir: str | None = None,
+):
+    """
+    Load a full DatasetDict from:
+    - a Hub repo id
+    - a local `save_to_disk` artifact
+    - a local HF datasets builder-cache directory
+    """
+    local_dataset = _try_load_local_dataset_artifact(dataset_path, logger, source_name)
+    if local_dataset is not None:
+        if hasattr(local_dataset, "keys"):
+            dataset = local_dataset
+        else:
+            dataset = DatasetDict({"train": local_dataset})
+        return _disable_audio_decoding(dataset, logger, source_name)
+
+    load_kwargs = {"keep_in_memory": False}
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        load_kwargs["cache_dir"] = cache_dir
+        logger.info(f"Using Hugging Face cache dir for '{source_name}': {cache_dir}")
+
+    dataset = load_dataset(dataset_path, **load_kwargs)
+    return _disable_audio_decoding(dataset, logger, source_name)
+
+
+def _try_load_local_dataset_artifact(dataset_path: str, logger, source_name: str):
+    """Load local HF dataset artifacts directly from disk when possible."""
+    if load_from_disk is None or Dataset is None or DatasetDict is None:
+        return None
+
+    root = str(dataset_path).strip()
+    if not root or not os.path.exists(root):
+        return None
+
+    candidate = _resolve_local_dataset_candidate(root, logger, source_name)
+    if candidate is None:
+        return None
+
+    candidate_path = candidate["path"]
+    candidate_type = candidate["type"]
+    logger.info(
+        f"Resolved local dataset artifact for '{source_name}': {candidate_path} ({candidate_type})"
+    )
+
+    if candidate_type in {"dataset_dict", "dataset"}:
+        return load_from_disk(candidate_path)
+    if candidate_type == "builder_cache":
+        return _load_dataset_dict_from_builder_cache(candidate_path)
+    return None
+
+
+def _resolve_local_dataset_candidate(root: str, logger, source_name: str):
+    root_path = Path(root)
+    direct_candidate = _classify_local_dataset_dir(root_path)
+    if direct_candidate is not None:
+        return direct_candidate
+
+    candidates = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        current = Path(dirpath)
+        candidate = _classify_local_dataset_dir(current, filenames=filenames)
+        if candidate is not None:
+            candidates.append(candidate)
+
+        if current.relative_to(root_path).parts and len(current.relative_to(root_path).parts) >= 4:
+            dirnames[:] = []
+
+    if not candidates:
+        return None
+
+    if len(candidates) > 1:
+        logger.info(
+            f"Found {len(candidates)} local dataset artifact candidates for '{source_name}' under {root}. "
+            "Selecting the best match automatically."
+        )
+
+    candidates.sort(key=_score_local_dataset_candidate, reverse=True)
+    selected = candidates[0]
+    logger.info(f"Selected local dataset candidate: {selected['path']}")
+    return selected
+
+
+def _classify_local_dataset_dir(path: Path, filenames=None):
+    filenames = set(filenames or os.listdir(path))
+
+    if "dataset_dict.json" in filenames:
+        return {
+            "path": str(path),
+            "type": "dataset_dict",
+            "split_count": _count_dataset_dict_splits(path),
+            "size_bytes": _directory_size_bytes(path),
+        }
+
+    if "state.json" in filenames and "dataset_info.json" in filenames:
+        return {
+            "path": str(path),
+            "type": "dataset",
+            "split_count": 1,
+            "size_bytes": _directory_size_bytes(path),
+        }
+
+    if "dataset_info.json" in filenames:
+        split_names = _extract_builder_cache_splits(path)
+        arrow_files = [name for name in filenames if name.endswith(".arrow")]
+        if split_names and arrow_files:
+            return {
+                "path": str(path),
+                "type": "builder_cache",
+                "split_count": len(split_names),
+                "size_bytes": _directory_size_bytes(path),
+            }
+
+    return None
+
+
+def _score_local_dataset_candidate(candidate):
+    type_priority = {
+        "dataset_dict": 3,
+        "dataset": 2,
+        "builder_cache": 1,
+    }
+    return (
+        type_priority.get(candidate["type"], 0),
+        int(candidate.get("split_count", 0)),
+        int(candidate.get("size_bytes", 0)),
+    )
+
+
+def _count_dataset_dict_splits(path: Path) -> int:
+    dataset_dict_path = path / "dataset_dict.json"
+    try:
+        with open(dataset_dict_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return len(payload)
+    except Exception:
+        return 0
+
+
+def _directory_size_bytes(path: Path) -> int:
+    total = 0
+    try:
+        for child in path.iterdir():
+            if child.is_file():
+                total += child.stat().st_size
+    except Exception:
+        return 0
+    return total
+
+
+def _extract_builder_cache_splits(path: Path) -> List[str]:
+    info_path = path / "dataset_info.json"
+    try:
+        with open(info_path, "r", encoding="utf-8") as handle:
+            dataset_info = json.load(handle)
+    except Exception:
+        return []
+
+    splits = dataset_info.get("splits", {}) or {}
+    return [str(split_name) for split_name in splits.keys()]
+
+
+def _load_dataset_dict_from_builder_cache(path: str):
+    info_path = Path(path) / "dataset_info.json"
+    with open(info_path, "r", encoding="utf-8") as handle:
+        dataset_info = json.load(handle)
+
+    split_names = [str(split_name) for split_name in (dataset_info.get("splits", {}) or {}).keys()]
+    datasets_by_split = {}
+    available_arrow_files = sorted(Path(path).glob("*.arrow"))
+    arrow_by_name = {arrow_file.name: arrow_file for arrow_file in available_arrow_files}
+
+    for split_name in split_names:
+        matched_arrow = None
+        suffix = f"-{split_name}.arrow"
+        for filename, arrow_path in arrow_by_name.items():
+            if filename.endswith(suffix):
+                matched_arrow = arrow_path
+                break
+
+        if matched_arrow is None and len(split_names) == 1 and len(available_arrow_files) == 1:
+            matched_arrow = available_arrow_files[0]
+
+        if matched_arrow is None:
+            raise FileNotFoundError(
+                f"Could not match split '{split_name}' to an Arrow file in local dataset cache: {path}"
+            )
+
+        datasets_by_split[split_name] = Dataset.from_file(str(matched_arrow))
+
+    return DatasetDict(datasets_by_split)
 
 
 def _disable_audio_decoding(dataset_obj, logger, source_name: str, split_name: str | None = None):
