@@ -84,7 +84,7 @@ data:
       path: "nguyendv02/ViMD_Dataset"
 
     lsvsc:
-      enabled: true
+      enabled: false
       path: "doof-ferb/LSVSC"
       dialect_map:
         northern dialect: North
