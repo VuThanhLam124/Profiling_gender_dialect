@@ -603,7 +603,11 @@ def _split_dataset_by_speaker(dataset, speaker_column: str, val_split: float, te
     val_idx = np.flatnonzero(np.isin(speaker_ids, val_speakers)).tolist()
     test_idx = np.flatnonzero(np.isin(speaker_ids, test_speakers)).tolist()
 
-    return dataset.select(train_idx), dataset.select(val_idx), dataset.select(test_idx)
+    return (
+        _select_rows(dataset, train_idx),
+        _select_rows(dataset, val_idx),
+        _select_rows(dataset, test_idx),
+    )
 
 
 def _normalize_split(dataset, source_name: str, config, unified_cfg):
@@ -652,7 +656,7 @@ def _normalize_split(dataset, source_name: str, config, unified_cfg):
     if not valid_indices:
         raise ValueError(f"Source '{source_name}' has no valid samples after label normalization.")
 
-    dataset = dataset.select(valid_indices)
+    dataset = _select_rows(dataset, valid_indices)
     remove_columns = [column for column in dataset.column_names if column != "audio"]
     if remove_columns:
         dataset = dataset.remove_columns(remove_columns)
@@ -793,7 +797,8 @@ def _build_balanced_concat(train_parts_by_source: Dict[str, object], sampling_pr
     logger.info(f"Balanced concat target epoch size: {sum(final_counts.values()):,}")
     logger.info(f"Balanced concat per-source targets: {final_counts}")
 
-    return concatenate_datasets(repeated_parts).shuffle(seed=seed)
+    merged = concatenate_datasets(repeated_parts)
+    return _shuffle_dataset(merged, seed=seed)
 
 
 def _repeat_dataset(dataset, target_count: int, seed: int):
@@ -812,7 +817,23 @@ def _repeat_dataset(dataset, target_count: int, seed: int):
             chunks.append(rng.permutation(num_rows)[:remainder])
         indices = np.concatenate(chunks, axis=0)
 
-    return dataset.select(indices.tolist())
+    return _select_rows(dataset, indices.tolist())
+
+
+def _select_rows(dataset, indices):
+    """
+    Select rows without writing indices cache files next to the source dataset.
+
+    This matters on Kaggle because `/kaggle/input` is read-only.
+    """
+    return dataset.select(list(indices), keep_in_memory=True)
+
+
+def _shuffle_dataset(dataset, seed: int):
+    """
+    Shuffle without persisting a temporary indices file to the dataset directory.
+    """
+    return dataset.shuffle(seed=seed, keep_in_memory=True)
 
 
 def _log_label_stats(dataset, logger, name: str):
