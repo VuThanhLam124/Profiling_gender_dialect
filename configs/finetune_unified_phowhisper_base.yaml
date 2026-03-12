@@ -1,0 +1,108 @@
+# Unified finetune config for PhoWhisper-base on 3 datasets:
+# - ViMD
+# - LSVSC
+# - ViSEC
+#
+# This config is intended for convenient end-to-end finetuning with the current
+# unified pipeline. If you run on Kaggle/server without internet access, replace
+# each dataset `path` below with the mounted local dataset path.
+
+model:
+  name: "vinai/PhoWhisper-base"
+  num_genders: 2
+  num_dialects: 3
+  dropout: 0.2
+  head_hidden_dim: 512
+  freeze_encoder: false
+
+audio:
+  sampling_rate: 16000
+  # Whisper/PhoWhisper is internally padded/truncated to 30s by this repo.
+  max_duration: 5
+
+training:
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2e-5
+  num_epochs: 10
+  warmup_ratio: 0.08
+  weight_decay: 0.01
+  gradient_clip: 0.5
+  lr_scheduler: "cosine"
+  fp16: true
+  dataloader_num_workers: 2
+  resume_from_checkpoint: null
+
+augmentation:
+  enabled: true
+  prob: 0.75
+
+loss:
+  dialect_weight: 4.0
+
+wandb:
+  enabled: false
+  api_key: null
+  project: "speaker-profiling-unified"
+  run_name: "phowhisper-base-unified-10epochs"
+
+data:
+  source: "unified"
+
+  unified:
+    enabled_sources:
+      - vimd
+      - lsvsc
+      - visec
+
+    train_merge_strategy: "balanced_concat"
+
+    sampling_probs:
+      vimd: 0.4
+      lsvsc: 0.4
+      visec: 0.2
+
+    vimd:
+      enabled: true
+      path: "nguyendv02/ViMD_Dataset"
+
+    lsvsc:
+      enabled: true
+      path: "doof-ferb/LSVSC"
+      dialect_map:
+        northern dialect: North
+        central dialect: Central
+        southern dialect: South
+
+    visec:
+      enabled: true
+      path: "hustep-lab/ViSEC"
+      val_split: 0.1
+      test_split: 0.1
+      split_seed: 42
+
+output:
+  dir: "output/unified-phowhisper-base-10epochs"
+  save_total_limit: 2
+  metric_for_best_model: "dialect_acc"
+
+early_stopping:
+  patience: 3
+  threshold: 0.001
+
+labels:
+  gender:
+    Male: 0
+    Female: 1
+    0: 0
+    1: 1
+  dialect:
+    North: 0
+    Central: 1
+    South: 2
+  region_to_dialect:
+    North: 0
+    Central: 1
+    South: 2
+
+seed: 42
