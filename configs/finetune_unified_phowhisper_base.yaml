@@ -63,7 +63,7 @@ data:
       visec: 0.2
 
     vimd:
-      enabled: true
+      enabled: false
       path: "nguyendv02/ViMD_Dataset"
 
     lsvsc:
