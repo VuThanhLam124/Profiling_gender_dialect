@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -399,27 +400,60 @@ def _load_dataset_dict_from_builder_cache(path: str):
     split_names = [str(split_name) for split_name in (dataset_info.get("splits", {}) or {}).keys()]
     datasets_by_split = {}
     available_arrow_files = sorted(Path(path).glob("*.arrow"))
-    arrow_by_name = {arrow_file.name: arrow_file for arrow_file in available_arrow_files}
 
     for split_name in split_names:
-        matched_arrow = None
-        suffix = f"-{split_name}.arrow"
-        for filename, arrow_path in arrow_by_name.items():
-            if filename.endswith(suffix):
-                matched_arrow = arrow_path
-                break
+        matched_arrows = _match_arrow_files_for_split(available_arrow_files, split_name)
 
-        if matched_arrow is None and len(split_names) == 1 and len(available_arrow_files) == 1:
-            matched_arrow = available_arrow_files[0]
+        if not matched_arrows and len(split_names) == 1:
+            matched_arrows = available_arrow_files
 
-        if matched_arrow is None:
+        if not matched_arrows:
             raise FileNotFoundError(
                 f"Could not match split '{split_name}' to an Arrow file in local dataset cache: {path}"
             )
 
-        datasets_by_split[split_name] = Dataset.from_file(str(matched_arrow))
+        split_datasets = [Dataset.from_file(str(arrow_path)) for arrow_path in matched_arrows]
+        if len(split_datasets) == 1:
+            datasets_by_split[split_name] = split_datasets[0]
+        else:
+            datasets_by_split[split_name] = concatenate_datasets(split_datasets)
 
     return DatasetDict(datasets_by_split)
+
+
+def _match_arrow_files_for_split(arrow_files: List[Path], split_name: str) -> List[Path]:
+    """
+    Match builder-cache Arrow shards for a given split.
+
+    Supports common HF naming styles such as:
+    - dataset-train.arrow
+    - dataset-train-00000-of-00008.arrow
+    - train.arrow
+    """
+    if not arrow_files:
+        return []
+
+    split_name = str(split_name).strip()
+    if not split_name:
+        return []
+
+    split_pattern = re.compile(
+        rf"(^|[-_/]){re.escape(split_name)}($|[-_.])",
+        flags=re.IGNORECASE,
+    )
+
+    matched = []
+    for arrow_path in arrow_files:
+        stem = arrow_path.stem
+        if split_pattern.search(stem):
+            matched.append(arrow_path)
+
+    if matched:
+        return sorted(matched)
+
+    exact_name = f"{split_name}.arrow"
+    exact_matches = [arrow_path for arrow_path in arrow_files if arrow_path.name.lower() == exact_name.lower()]
+    return sorted(exact_matches)
 
 
 def _disable_audio_decoding(dataset_obj, logger, source_name: str, split_name: str | None = None):
