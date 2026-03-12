@@ -37,7 +37,7 @@ audio:
   max_duration: 5
 
 training:
-  batch_size: 16
+  batch_size: 32
   gradient_accumulation_steps: 4
   learning_rate: 1e-4
   num_epochs: 10
@@ -57,7 +57,7 @@ loss:
   dialect_weight: 4.0
 
 wandb:
-  enabled: false
+  enabled: true
   api_key: null
   project: "speaker-profiling-unified"
   run_name: "phowhisper-base-lora-unified"
