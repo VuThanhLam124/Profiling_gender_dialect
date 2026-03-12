@@ -136,21 +136,28 @@ def load_unified_data(config, logger):
 def _get_enabled_sources(unified_cfg) -> List[str]:
     explicit = unified_cfg.get("enabled_sources")
     if explicit:
-        enabled_sources = [str(source).strip().lower() for source in explicit if str(source).strip()]
+        requested_sources = [str(source).strip().lower() for source in explicit if str(source).strip()]
     else:
-        enabled_sources = []
+        requested_sources = []
         for source_name in SUPPORTED_UNIFIED_SOURCES:
             source_cfg = unified_cfg.get(source_name, {})
             if bool(source_cfg.get("enabled", True)):
-                enabled_sources.append(source_name)
+                requested_sources.append(source_name)
 
-    enabled_sources = list(dict.fromkeys(enabled_sources))
-    unknown_sources = [source for source in enabled_sources if source not in SUPPORTED_UNIFIED_SOURCES]
+    requested_sources = list(dict.fromkeys(requested_sources))
+    unknown_sources = [source for source in requested_sources if source not in SUPPORTED_UNIFIED_SOURCES]
     if unknown_sources:
         raise ValueError(
             f"Unsupported unified sources: {unknown_sources}. "
             f"Supported: {list(SUPPORTED_UNIFIED_SOURCES)}"
         )
+
+    enabled_sources = []
+    for source_name in requested_sources:
+        source_cfg = unified_cfg.get(source_name, {})
+        if bool(source_cfg.get("enabled", True)):
+            enabled_sources.append(source_name)
+
     return enabled_sources
 
 
