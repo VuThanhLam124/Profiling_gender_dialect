@@ -33,8 +33,8 @@ try:
 except ImportError:
     HF_DATASETS_AVAILABLE = False
 
-from src.models import MultiTaskSpeakerModel
-from src.utils import setup_logging, get_logger
+from src.models import MultiTaskSpeakerModel, get_model_init_kwargs_from_config
+from src.utils import setup_logging, get_logger, detect_head_hidden_dim
 
 
 # ============================================================
@@ -590,15 +590,12 @@ def main():
     # Load model
     logger.info("")
     logger.info("Loading model...")
-    model_config = config.get('model', {})
-    model = MultiTaskSpeakerModel(
-        model_name=model_name,
-        num_genders=model_config.get('num_genders', 2),
-        num_dialects=model_config.get('num_dialects', 3),
-        dropout=model_config.get('dropout', 0.15),
-        head_hidden_dim=model_config.get('head_hidden_dim', 256),
-        freeze_encoder=False
+    model_kwargs = get_model_init_kwargs_from_config(config, include_loss_weight=False)
+    model_kwargs['head_hidden_dim'] = detect_head_hidden_dim(
+        args.checkpoint,
+        default=model_kwargs.get('head_hidden_dim', 256)
     )
+    model = MultiTaskSpeakerModel(**model_kwargs)
     
     state_dict = load_checkpoint(args.checkpoint, device)
     model.load_state_dict(state_dict)

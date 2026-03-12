@@ -16,7 +16,7 @@ import torch
 import librosa
 from transformers import Wav2Vec2FeatureExtractor, WhisperFeatureExtractor
 
-from src.models import MultiTaskSpeakerModel
+from src.models import MultiTaskSpeakerModel, get_model_init_kwargs_from_config
 from src.utils import (
     setup_logging,
     get_logger,
@@ -24,20 +24,9 @@ from src.utils import (
     get_device,
     load_model_checkpoint,
     resolve_checkpoint_dir,
-    load_and_preprocess_audio
+    load_and_preprocess_audio,
+    detect_head_hidden_dim,
 )
-
-def _detect_head_hidden_dim(checkpoint_dir: str) -> int:
-    safetensors_path = os.path.join(checkpoint_dir, "model.safetensors")
-    if os.path.exists(safetensors_path):
-        try:
-            from safetensors.torch import safe_open
-            with safe_open(safetensors_path, framework="pt", device="cpu") as f:
-                if "gender_head.0.weight" in f.keys():
-                    return int(f.get_tensor("gender_head.0.weight").shape[0])
-        except Exception:
-            pass
-    return 256
 
 
 class SpeakerProfiler:
@@ -127,8 +116,9 @@ class SpeakerProfiler:
                 model_name
             )
 
-        head_hidden_dim = _detect_head_hidden_dim(self.checkpoint_dir)
-        self.model = MultiTaskSpeakerModel(model_name, head_hidden_dim=head_hidden_dim, freeze_encoder=True)
+        model_kwargs = get_model_init_kwargs_from_config(self.config, include_loss_weight=False)
+        model_kwargs["head_hidden_dim"] = detect_head_hidden_dim(self.checkpoint_dir)
+        self.model = MultiTaskSpeakerModel(**model_kwargs)
         self.model = load_model_checkpoint(
             self.model,
             self.checkpoint_dir,

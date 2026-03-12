@@ -2,15 +2,16 @@
 Utility functions for Speaker Profiling
 """
 
-import os
 import logging
+import os
 import random
+from pathlib import Path
+from typing import Union, Optional, Tuple
+
+import librosa
 import numpy as np
 import torch
-import librosa
-from pathlib import Path
 from omegaconf import OmegaConf
-from typing import Union, Optional, Tuple
 
 
 def resolve_checkpoint_dir(checkpoint: Union[str, Path]) -> str:
@@ -297,6 +298,39 @@ def load_model_checkpoint(
     
     model.load_state_dict(state_dict)
     return model
+
+
+def detect_head_hidden_dim(checkpoint_dir: Union[str, Path], default: int = 256) -> int:
+    """
+    Infer head hidden size from a saved checkpoint.
+
+    This helps inference/app scripts load models even when the checkpoint
+    was trained with a non-default head size.
+    """
+    checkpoint_dir = resolve_checkpoint_dir(checkpoint_dir)
+    safetensors_path = os.path.join(checkpoint_dir, "model.safetensors")
+    pytorch_path = os.path.join(checkpoint_dir, "pytorch_model.bin")
+
+    if os.path.exists(safetensors_path):
+        try:
+            from safetensors.torch import safe_open
+
+            with safe_open(safetensors_path, framework="pt", device="cpu") as handle:
+                if "gender_head.0.weight" in handle.keys():
+                    return int(handle.get_tensor("gender_head.0.weight").shape[0])
+        except Exception:
+            return default
+
+    if os.path.exists(pytorch_path):
+        try:
+            state_dict = torch.load(pytorch_path, map_location="cpu")
+            weight = state_dict.get("gender_head.0.weight")
+            if weight is not None:
+                return int(weight.shape[0])
+        except Exception:
+            return default
+
+    return default
 
 
 def get_device(device_str: str = 'cuda') -> torch.device:

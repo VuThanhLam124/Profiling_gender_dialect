@@ -6,6 +6,8 @@ https://github.com/VuThanhLam124/Profiling_gender_dialect/blob/main/ARCHITECTURE
 """
 
 import logging
+from typing import Any, Dict, Iterable, List, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,8 +19,17 @@ from transformers import (
     AutoConfig
 )
 
+try:
+    from peft import LoraConfig, inject_adapter_in_model
+    PEFT_AVAILABLE = True
+except ImportError:
+    LoraConfig = None
+    inject_adapter_in_model = None
+    PEFT_AVAILABLE = False
+
 SPEECHBRAIN_AVAILABLE = None  # Will be set on first use
 EncoderClassifier = None  # Will be imported lazily
+DEFAULT_LORA_TARGET_MODULES = ["q_proj", "v_proj"]
 
 def _check_speechbrain():
     """Lazily check and import SpeechBrain"""
@@ -34,6 +45,48 @@ def _check_speechbrain():
     return SPEECHBRAIN_AVAILABLE
 
 logger = logging.getLogger("speaker_profiling")
+
+
+def normalize_lora_target_modules(target_modules: Optional[Iterable[str]]) -> List[str]:
+    """Normalize LoRA target modules from config into a clean string list."""
+    if target_modules is None:
+        return list(DEFAULT_LORA_TARGET_MODULES)
+
+    if isinstance(target_modules, str):
+        modules = [part.strip() for part in target_modules.split(",")]
+    else:
+        modules = [str(part).strip() for part in target_modules]
+
+    modules = [module for module in modules if module]
+    return modules or list(DEFAULT_LORA_TARGET_MODULES)
+
+
+def get_model_init_kwargs_from_config(
+    config: Dict[str, Any],
+    include_loss_weight: bool = True
+) -> Dict[str, Any]:
+    """Build MultiTaskSpeakerModel kwargs from a config object."""
+    model_config = config.get('model', {})
+
+    kwargs = {
+        'model_name': model_config['name'],
+        'num_genders': model_config.get('num_genders', 2),
+        'num_dialects': model_config.get('num_dialects', 3),
+        'dropout': model_config.get('dropout', 0.1),
+        'head_hidden_dim': model_config.get('head_hidden_dim', 256),
+        'freeze_encoder': model_config.get('freeze_encoder', False),
+        'use_lora': model_config.get('use_lora', False),
+        'lora_r': model_config.get('lora_r', 16),
+        'lora_alpha': model_config.get('lora_alpha', 32),
+        'lora_dropout': model_config.get('lora_dropout', 0.1),
+        'lora_bias': model_config.get('lora_bias', 'none'),
+        'lora_target_modules': model_config.get('lora_target_modules'),
+    }
+
+    if include_loss_weight:
+        kwargs['dialect_loss_weight'] = config.get('loss', {}).get('dialect_weight', 3.0)
+
+    return kwargs
 
 
 class ECAPATDNNEncoder(nn.Module):
@@ -285,12 +338,24 @@ class MultiTaskSpeakerModel(nn.Module):
         dropout: float = 0.1, 
         head_hidden_dim: int = 256,
         freeze_encoder: bool = False,
-        dialect_loss_weight: float = 3.0
+        dialect_loss_weight: float = 3.0,
+        use_lora: bool = False,
+        lora_r: int = 16,
+        lora_alpha: int = 32,
+        lora_dropout: float = 0.1,
+        lora_bias: str = "none",
+        lora_target_modules: Optional[Iterable[str]] = None,
     ):
         super().__init__()
         
         self.model_name = model_name
         self.dialect_loss_weight = dialect_loss_weight
+        self.use_lora = bool(use_lora)
+        self.lora_r = int(lora_r)
+        self.lora_alpha = int(lora_alpha)
+        self.lora_dropout = float(lora_dropout)
+        self.lora_bias = str(lora_bias)
+        self.lora_target_modules = normalize_lora_target_modules(lora_target_modules)
         
         # Get encoder info and load model
         encoder_info = get_encoder_info(model_name)
@@ -312,7 +377,9 @@ class MultiTaskSpeakerModel(nn.Module):
         
         logger.info(f"Hidden size: {hidden_size}")
         
-        if freeze_encoder:
+        if self.use_lora:
+            self._apply_lora()
+        elif freeze_encoder:
             for param in self.encoder.parameters():
                 param.requires_grad = False
             logger.info("Encoder weights frozen")
@@ -340,6 +407,44 @@ class MultiTaskSpeakerModel(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(head_hidden_dim // 2, num_dialects)
         )
+
+    def _apply_lora(self):
+        """Freeze the base encoder and inject LoRA adapters into attention projections."""
+        if not PEFT_AVAILABLE:
+            raise ImportError(
+                "peft is required when model.use_lora=true. Install with: pip install peft"
+            )
+        if self.is_ecapa:
+            raise ValueError("LoRA is not supported for ECAPA-TDNN in this repo.")
+        if self.lora_r <= 0:
+            raise ValueError(f"lora_r must be > 0, got {self.lora_r}")
+
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+        target_model = self.encoder.encoder if self.is_whisper else self.encoder
+        lora_config = LoraConfig(
+            r=self.lora_r,
+            lora_alpha=self.lora_alpha,
+            lora_dropout=self.lora_dropout,
+            bias=self.lora_bias,
+            target_modules=self.lora_target_modules,
+        )
+        inject_adapter_in_model(lora_config, target_model)
+
+        encoder_trainable = sum(
+            param.numel() for param in self.encoder.parameters() if param.requires_grad
+        )
+        scope = "Whisper encoder only" if self.is_whisper else "encoder"
+        logger.info(
+            "LoRA enabled on %s: r=%s, alpha=%s, dropout=%s, targets=%s",
+            scope,
+            self.lora_r,
+            self.lora_alpha,
+            self.lora_dropout,
+            self.lora_target_modules,
+        )
+        logger.info(f"Trainable encoder parameters after LoRA injection: {encoder_trainable:,}")
     
     def forward(
         self, 
@@ -480,21 +585,22 @@ class MultiTaskSpeakerModelFromConfig(MultiTaskSpeakerModel):
     
     def __init__(self, config):
         model_config = config['model']
-        
-        super().__init__(
-            model_name=model_config['name'],
-            num_genders=model_config.get('num_genders', 2),
-            num_dialects=model_config.get('num_dialects', 3),
-            dropout=model_config.get('dropout', 0.1),
-            head_hidden_dim=model_config.get('head_hidden_dim', 256),
-            freeze_encoder=model_config.get('freeze_encoder', False),
-            dialect_loss_weight=config.get('loss', {}).get('dialect_weight', 3.0)
-        )
+
+        super().__init__(**get_model_init_kwargs_from_config(config, include_loss_weight=True))
         
         logger.info(f"Architecture: {model_config['name']} + Attentive Pooling + LayerNorm")
         logger.info(f"Hidden size: {self.hidden_size}")
         logger.info(f"Head hidden dim: {model_config.get('head_hidden_dim', 256)}")
         logger.info(f"Dropout: {model_config.get('dropout', 0.1)}")
+        logger.info(f"LoRA enabled: {model_config.get('use_lora', False)}")
+        if model_config.get('use_lora', False):
+            logger.info(
+                "LoRA config: r=%s, alpha=%s, dropout=%s, targets=%s",
+                model_config.get('lora_r', 16),
+                model_config.get('lora_alpha', 32),
+                model_config.get('lora_dropout', 0.1),
+                normalize_lora_target_modules(model_config.get('lora_target_modules')),
+            )
 
 
 class ClassificationHeadModel(nn.Module):

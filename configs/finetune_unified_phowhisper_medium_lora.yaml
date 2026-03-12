@@ -1,0 +1,125 @@
+# Unified LoRA finetune config for PhoWhisper-medium on:
+# - ViMD
+# - LSVSC
+# - ViSEC
+#
+# Designed for a single 24GB GPU (RTX 3090 / similar).
+# LoRA freezes the PhoWhisper base encoder and only trains:
+# - LoRA adapters inside attention projections
+# - attentive pooling
+# - layer norm
+# - gender head
+# - dialect head
+#
+# If training is stable and GPU memory still has headroom, try:
+# 1. `batch_size: 2`
+# 2. or lower `gradient_accumulation_steps`
+
+model:
+  name: "vinai/PhoWhisper-medium"
+  num_genders: 2
+  num_dialects: 3
+  dropout: 0.15
+  head_hidden_dim: 512
+  freeze_encoder: false
+  use_lora: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.1
+  lora_bias: "none"
+  lora_target_modules:
+    - q_proj
+    - v_proj
+
+audio:
+  sampling_rate: 16000
+  # Whisper/PhoWhisper is internally normalized to 30s input in this repo.
+  max_duration: 5
+
+training:
+  batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 1e-4
+  num_epochs: 10
+  warmup_ratio: 0.06
+  weight_decay: 0.01
+  gradient_clip: 0.5
+  lr_scheduler: "cosine"
+  fp16: true
+  dataloader_num_workers: 2
+  resume_from_checkpoint: null
+
+augmentation:
+  enabled: true
+  prob: 0.75
+
+loss:
+  dialect_weight: 4.0
+
+wandb:
+  enabled: false
+  api_key: null
+  project: "speaker-profiling-unified"
+  run_name: "phowhisper-medium-lora-unified"
+
+data:
+  source: "unified"
+  hf_cache_dir: null
+
+  unified:
+    enabled_sources:
+      - vimd
+      - lsvsc
+      - visec
+
+    train_merge_strategy: "balanced_concat"
+
+    sampling_probs:
+      vimd: 0.4
+      lsvsc: 0.4
+      visec: 0.2
+
+    vimd:
+      enabled: true
+      path: "nguyendv02/ViMD_Dataset"
+
+    lsvsc:
+      enabled: true
+      path: "doof-ferb/LSVSC"
+      dialect_map:
+        northern dialect: North
+        central dialect: Central
+        southern dialect: South
+
+    visec:
+      enabled: true
+      path: "hustep-lab/ViSEC"
+      val_split: 0.1
+      test_split: 0.1
+      split_seed: 42
+
+output:
+  dir: "output/unified-phowhisper-medium-lora"
+  save_total_limit: 1
+  metric_for_best_model: "dialect_acc"
+
+early_stopping:
+  patience: 3
+  threshold: 0.001
+
+labels:
+  gender:
+    Male: 0
+    Female: 1
+    0: 0
+    1: 1
+  dialect:
+    North: 0
+    Central: 1
+    South: 2
+  region_to_dialect:
+    North: 0
+    Central: 1
+    South: 2
+
+seed: 42

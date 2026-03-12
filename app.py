@@ -16,14 +16,15 @@ import librosa
 import gradio as gr
 from pathlib import Path
 
-from src.models import MultiTaskSpeakerModel
+from src.models import MultiTaskSpeakerModel, get_model_init_kwargs_from_config
 from src.utils import (
     setup_logging,
     get_logger,
     load_config,
     get_device,
     load_model_checkpoint,
-    preprocess_audio
+    preprocess_audio,
+    detect_head_hidden_dim,
 )
 
 
@@ -70,7 +71,12 @@ class SpeakerProfilerApp:
                 self.config['model']['checkpoint']
             )
         
-        self.model = MultiTaskSpeakerModel(model_name)
+        model_kwargs = get_model_init_kwargs_from_config(self.config, include_loss_weight=False)
+        model_kwargs["head_hidden_dim"] = detect_head_hidden_dim(
+            self.config['model']['checkpoint'],
+            default=model_kwargs.get('head_hidden_dim', 256)
+        )
+        self.model = MultiTaskSpeakerModel(**model_kwargs)
         self.model = load_model_checkpoint(
             self.model,
             self.config['model']['checkpoint'],
