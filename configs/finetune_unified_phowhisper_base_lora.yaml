@@ -84,7 +84,7 @@ data:
       path: "/kaggle/input/datasets/thanhlamdev/vimd-dataset"
 
     lsvsc:
-      enabled: false
+      enabled: true
       path: "doof-ferb/LSVSC"
       dialect_map:
         northern dialect: North
