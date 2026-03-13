@@ -512,14 +512,28 @@ def load_vimd_test_data(config):
     """Load ViMD test dataset from HuggingFace format"""
     if not HF_DATASETS_AVAILABLE:
         raise ImportError("datasets library required for ViMD. Install: pip install datasets")
-    
-    vimd_path = config['data']['vimd_path']
+
+    data_cfg = config.get('data', {})
+    vimd_path = data_cfg.get('vimd_path')
+    if not vimd_path:
+        vimd_path = ((data_cfg.get('unified') or {}).get('vimd') or {}).get('path')
+    if not vimd_path:
+        raise KeyError(
+            "Could not find ViMD path in config. Expected either "
+            "data.vimd_path or data.unified.vimd.path"
+        )
+
+    cache_dir = (
+        data_cfg.get('hf_cache_dir')
+        or ((data_cfg.get('unified') or {}).get('vimd') or {}).get('cache_dir')
+        or ((data_cfg.get('unified') or {}).get('cache_dir'))
+    )
     logger = get_logger()
     ds = load_dataset_splits_from_path(
         dataset_path=vimd_path,
         logger=logger,
         source_name='vimd',
-        cache_dir=config.get('data', {}).get('hf_cache_dir'),
+        cache_dir=cache_dir,
     )
 
     return ds.get('test')
