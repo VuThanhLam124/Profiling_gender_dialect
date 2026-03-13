@@ -6,6 +6,7 @@ https://github.com/VuThanhLam124/Profiling_gender_dialect/blob/main/ARCHITECTURE
 """
 
 import logging
+from collections.abc import Mapping
 from typing import Any, Dict, Iterable, List, Optional
 
 import torch
@@ -74,6 +75,7 @@ def get_model_init_kwargs_from_config(
         'num_dialects': model_config.get('num_dialects', 3),
         'dropout': model_config.get('dropout', 0.1),
         'head_hidden_dim': model_config.get('head_hidden_dim', 256),
+        'dialect_head_hidden_dims': model_config.get('dialect_head_hidden_dims'),
         'freeze_encoder': model_config.get('freeze_encoder', False),
         'use_lora': model_config.get('use_lora', False),
         'lora_r': model_config.get('lora_r', 16),
@@ -85,8 +87,93 @@ def get_model_init_kwargs_from_config(
 
     if include_loss_weight:
         kwargs['dialect_loss_weight'] = config.get('loss', {}).get('dialect_weight', 3.0)
+        kwargs['dialect_class_weights'] = _resolve_class_weights_from_config(
+            config=config,
+            label_key='dialect',
+            weights_key='dialect_class_weights',
+        )
 
     return kwargs
+
+
+def _resolve_class_weights_from_config(
+    config: Dict[str, Any],
+    label_key: str,
+    weights_key: str,
+) -> Optional[List[float]]:
+    """Resolve class weights from config into class-index order."""
+    labels_cfg = (config.get('labels') or {}).get(label_key) or {}
+    loss_cfg = config.get('loss') or {}
+    weights_cfg = loss_cfg.get(weights_key)
+    if weights_cfg is None:
+        return None
+
+    if isinstance(weights_cfg, (list, tuple)) or (
+        not isinstance(weights_cfg, (str, bytes)) and hasattr(weights_cfg, "__iter__") and not hasattr(weights_cfg, "items")
+    ):
+        return [float(value) for value in weights_cfg]
+
+    if not isinstance(weights_cfg, Mapping) and not hasattr(weights_cfg, "items"):
+        raise ValueError(
+            f"loss.{weights_key} must be a list or mapping. Got: {type(weights_cfg).__name__}"
+        )
+
+    ordered_labels = sorted(
+        ((label_name, int(label_id)) for label_name, label_id in labels_cfg.items() if isinstance(label_name, str)),
+        key=lambda item: item[1],
+    )
+    if not ordered_labels:
+        raise ValueError(f"labels.{label_key} must contain string label names mapped to ids.")
+
+    class_weights = [1.0] * len(ordered_labels)
+    for raw_key, raw_value in weights_cfg.items():
+        if isinstance(raw_key, int) or (isinstance(raw_key, str) and str(raw_key).isdigit()):
+            class_index = int(raw_key)
+            if not 0 <= class_index < len(class_weights):
+                raise ValueError(
+                    f"loss.{weights_key} contains out-of-range class index {class_index}."
+                )
+        else:
+            class_index = labels_cfg.get(str(raw_key))
+            if class_index is None:
+                raise ValueError(
+                    f"loss.{weights_key} contains unknown label '{raw_key}'. "
+                    f"Expected one of {[name for name, _ in ordered_labels]}."
+                )
+            class_index = int(class_index)
+        class_weights[class_index] = float(raw_value)
+
+    return class_weights
+
+
+def _normalize_hidden_dims(hidden_dims: Optional[Iterable[int]], fallback_hidden_dim: int) -> List[int]:
+    """Resolve hidden dimensions for configurable MLP heads."""
+    if hidden_dims is None:
+        normalized = [int(fallback_hidden_dim), max(1, int(fallback_hidden_dim) // 2)]
+    elif isinstance(hidden_dims, int):
+        normalized = [int(hidden_dims)]
+    else:
+        normalized = [int(value) for value in hidden_dims]
+
+    normalized = [value for value in normalized if value > 0]
+    if not normalized:
+        raise ValueError("dialect_head_hidden_dims must contain at least one positive integer.")
+    return normalized
+
+
+def _build_mlp_head(input_dim: int, hidden_dims: Iterable[int], output_dim: int, dropout: float) -> nn.Sequential:
+    """Build a simple MLP classifier head."""
+    layers: List[nn.Module] = []
+    current_dim = int(input_dim)
+    for hidden_dim in hidden_dims:
+        layers.extend([
+            nn.Linear(current_dim, int(hidden_dim)),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        ])
+        current_dim = int(hidden_dim)
+    layers.append(nn.Linear(current_dim, output_dim))
+    return nn.Sequential(*layers)
 
 
 class ECAPATDNNEncoder(nn.Module):
@@ -308,7 +395,7 @@ class MultiTaskSpeakerModel(nn.Module):
                               |
               +---------------+---------------+
               |                               |
-        Gender Head (2 layers)     Dialect Head (3 layers)
+        Gender Head (2 layers)     Dialect Head (4 layers)
               |                               |
             [B,2]                           [B,3]
     
@@ -337,8 +424,10 @@ class MultiTaskSpeakerModel(nn.Module):
         num_dialects: int = 3, 
         dropout: float = 0.1, 
         head_hidden_dim: int = 256,
+        dialect_head_hidden_dims: Optional[Iterable[int]] = None,
         freeze_encoder: bool = False,
         dialect_loss_weight: float = 3.0,
+        dialect_class_weights: Optional[Iterable[float]] = None,
         use_lora: bool = False,
         lora_r: int = 16,
         lora_alpha: int = 32,
@@ -350,12 +439,26 @@ class MultiTaskSpeakerModel(nn.Module):
         
         self.model_name = model_name
         self.dialect_loss_weight = dialect_loss_weight
+        self.dialect_head_hidden_dims = _normalize_hidden_dims(dialect_head_hidden_dims, head_hidden_dim)
         self.use_lora = bool(use_lora)
         self.lora_r = int(lora_r)
         self.lora_alpha = int(lora_alpha)
         self.lora_dropout = float(lora_dropout)
         self.lora_bias = str(lora_bias)
         self.lora_target_modules = normalize_lora_target_modules(lora_target_modules)
+        if dialect_class_weights is not None:
+            dialect_class_weights = [float(weight) for weight in dialect_class_weights]
+            if len(dialect_class_weights) != int(num_dialects):
+                raise ValueError(
+                    f"dialect_class_weights must have {num_dialects} values, got {len(dialect_class_weights)}"
+                )
+            self.register_buffer(
+                "dialect_class_weights",
+                torch.tensor(dialect_class_weights, dtype=torch.float32),
+                persistent=False,
+            )
+        else:
+            self.register_buffer("dialect_class_weights", None, persistent=False)
         
         # Get encoder info and load model
         encoder_info = get_encoder_info(model_name)
@@ -397,15 +500,12 @@ class MultiTaskSpeakerModel(nn.Module):
             nn.Linear(head_hidden_dim, num_genders)
         )
         
-        # Dialect classification head (3 layers - deeper for harder task)
-        self.dialect_head = nn.Sequential(
-            nn.Linear(hidden_size, head_hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(head_hidden_dim, head_hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(head_hidden_dim // 2, num_dialects)
+        # Dialect classification head is configurable so we can deepen it for harder accent boundaries.
+        self.dialect_head = _build_mlp_head(
+            input_dim=hidden_size,
+            hidden_dims=self.dialect_head_hidden_dims,
+            output_dim=num_dialects,
+            dropout=dropout,
         )
 
     def _apply_lora(self):
@@ -502,9 +602,11 @@ class MultiTaskSpeakerModel(nn.Module):
         # Compute loss if labels provided
         loss = None
         if gender_labels is not None and dialect_labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
-            gender_loss = loss_fct(gender_logits, gender_labels)
-            dialect_loss = loss_fct(dialect_logits, dialect_labels)
+            gender_loss = nn.CrossEntropyLoss()(gender_logits, gender_labels)
+            dialect_loss = nn.CrossEntropyLoss(weight=self.dialect_class_weights)(
+                dialect_logits,
+                dialect_labels,
+            )
             loss = gender_loss + self.dialect_loss_weight * dialect_loss
         
         return {
@@ -591,6 +693,7 @@ class MultiTaskSpeakerModelFromConfig(MultiTaskSpeakerModel):
         logger.info(f"Architecture: {model_config['name']} + Attentive Pooling + LayerNorm")
         logger.info(f"Hidden size: {self.hidden_size}")
         logger.info(f"Head hidden dim: {model_config.get('head_hidden_dim', 256)}")
+        logger.info(f"Dialect head hidden dims: {self.dialect_head_hidden_dims}")
         logger.info(f"Dropout: {model_config.get('dropout', 0.1)}")
         logger.info(f"LoRA enabled: {model_config.get('use_lora', False)}")
         if model_config.get('use_lora', False):
@@ -601,6 +704,8 @@ class MultiTaskSpeakerModelFromConfig(MultiTaskSpeakerModel):
                 model_config.get('lora_dropout', 0.1),
                 normalize_lora_target_modules(model_config.get('lora_target_modules')),
             )
+        if self.dialect_class_weights is not None:
+            logger.info(f"Dialect class weights: {self.dialect_class_weights.tolist()}")
 
 
 class ClassificationHeadModel(nn.Module):

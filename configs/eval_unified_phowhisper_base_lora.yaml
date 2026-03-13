@@ -1,12 +1,16 @@
 # Evaluation config for PhoWhisper-base + LoRA checkpoint trained on unified data.
 
 model:
-  checkpoint: "/kaggle/working/Profiling_gender_dialect/output/unified-phowhisper-base-lora/best_model"
+  checkpoint: "/kaggle/working/Profiling_gender_dialect/output/unified-phowhisper-base-lora-central-v2/best_model"
   name: "vinai/PhoWhisper-base"
   num_genders: 2
   num_dialects: 3
   dropout: 0.15
   head_hidden_dim: 512
+  dialect_head_hidden_dims:
+    - 512
+    - 256
+    - 128
   freeze_encoder: false
   use_lora: true
   lora_r: 16
@@ -29,7 +33,7 @@ data:
   vimd_path: "/kaggle/input/datasets/thanhlamdev/vimd-dataset"
 
 output:
-  dir: "/kaggle/working/Profiling_gender_dialect/output/unified-phowhisper-base-lora/eval"
+  dir: "/kaggle/working/Profiling_gender_dialect/output/unified-phowhisper-base-lora-central-v2/eval"
   save_predictions: true
   save_confusion_matrix: true
 

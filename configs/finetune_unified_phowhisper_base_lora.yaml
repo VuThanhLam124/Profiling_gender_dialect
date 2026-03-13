@@ -1,4 +1,4 @@
-# Unified LoRA finetune config for PhoWhisper-medium on:
+# Unified LoRA finetune config for PhoWhisper-base on:
 # - ViMD
 # - LSVSC
 # - ViSEC
@@ -21,6 +21,10 @@ model:
   num_dialects: 3
   dropout: 0.15
   head_hidden_dim: 512
+  dialect_head_hidden_dims:
+    - 512
+    - 256
+    - 128
   freeze_encoder: false
   use_lora: true
   lora_r: 16
@@ -51,16 +55,20 @@ training:
 
 augmentation:
   enabled: true
-  prob: 0.75
+  prob: 0.5
 
 loss:
-  dialect_weight: 4.0
+  dialect_weight: 5.0
+  dialect_class_weights:
+    North: 1.0
+    Central: 1.5
+    South: 1.15
 
 wandb:
   enabled: true
   api_key: null
   project: "speaker-profiling-unified"
-  run_name: "phowhisper-base-lora-unified"
+  run_name: "phowhisper-base-lora-central-v2"
 
 data:
   source: "unified"
@@ -99,7 +107,7 @@ data:
       split_seed: 42
 
 output:
-  dir: "output/unified-phowhisper-base-lora"
+  dir: "output/unified-phowhisper-base-lora-central-v2"
   save_total_limit: 1
   metric_for_best_model: "dialect_acc"
 
