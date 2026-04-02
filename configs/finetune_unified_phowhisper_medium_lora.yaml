@@ -40,8 +40,8 @@ audio:
 training:
   batch_size: 1
   gradient_accumulation_steps: 16
-  learning_rate: 1e-4
-  num_epochs: 10
+  learning_rate: 1.5e-4
+  num_epochs: 20
   warmup_ratio: 0.06
   weight_decay: 0.01
   gradient_clip: 0.5
@@ -52,10 +52,10 @@ training:
 
 augmentation:
   enabled: true
-  prob: 0.75
+  prob: 0.5
 
 loss:
-  dialect_weight: 4.0
+  dialect_weight: 5.0
 
 wandb:
   enabled: false
